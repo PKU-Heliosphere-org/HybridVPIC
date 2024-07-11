@@ -102,7 +102,7 @@ typedef struct pipeline_dispatcher {
   //
   // If the pipeline functions do not take arguments, use NULL for
   // args and 0 for sz and str
-
+                    
   void
   (*dispatch)( pipeline_func_t pipeline,
                void * args,
@@ -116,7 +116,11 @@ typedef struct pipeline_dispatcher {
 
 } pipeline_dispatcher_t;
 
+BEGIN_C_DECLS
+
 extern pipeline_dispatcher_t serial; // For debugging purposes
 extern pipeline_dispatcher_t thread;
 
-#endif // _pipelines_h_
+END_C_DECLS
+
+#endif // _pipelines_h_ 

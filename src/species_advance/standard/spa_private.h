@@ -66,6 +66,36 @@ PROTOTYPE_PIPELINE( center_p,   center_p_pipeline_args_t );
 PROTOTYPE_PIPELINE( uncenter_p, center_p_pipeline_args_t );
 
 ///////////////////////////////////////////////////////////////////////////////
+//ARI: for hyb uncenter, use advance_p pipleline args
+
+typedef struct hyb_uncenter_p_pipeline_args {
+
+  MEM_PTR( particle_t,           128 ) p0;       // Particle array
+  MEM_PTR( particle_mover_t,     128 ) pm;       // Particle mover array
+  MEM_PTR( accumulator_t,        128 ) a0;       // Accumulator arrays
+  MEM_PTR( const interpolator_t, 128 ) f0;       // Interpolator array
+  MEM_PTR( const grid_t,         1   ) g;        // Local domain grid params
+
+  float                                qdt_2mc;  // Particle/field coupling
+  float                                cdt_dx;   // x-space/time coupling
+  float                                cdt_dy;   // y-space/time coupling
+  float                                cdt_dz;   // z-space/time coupling
+  float                                qsp;      // Species particle charge
+
+  int                                  np;       // Number of particles
+  int                                  max_nm;   // Number of movers
+  int                                  nx;       // x-mesh resolution
+  int                                  ny;       // y-mesh resolution
+  int                                  nz;       // z-mesh resolution
+  int                                  accum;
+ 
+  PAD_STRUCT( 6*SIZEOF_MEM_PTR + 5*sizeof(float) + 5*sizeof(int) )
+
+} hyb_uncenter_p_pipeline_args_t;
+
+PROTOTYPE_PIPELINE( hyb_uncenter_p, hyb_uncenter_p_pipeline_args_t );
+
+///////////////////////////////////////////////////////////////////////////////
 // energy_p_pipeline interface
 
 typedef struct energy_p_pipeline_args {

@@ -12,6 +12,7 @@
 
 // FIXME: MOVE THIS INTO VPIC.HXX TO BE TRULY INLINE
 
+//ARI:need to call hyb_move_p 
 void
 vpic_simulation::inject_particle( species_t * sp,
                                   double x,  double y,  double z,
@@ -21,6 +22,7 @@ vpic_simulation::inject_particle( species_t * sp,
   int ix, iy, iz;
 
   // Check input parameters
+  if( !accumulator_array ) ERROR(( "Accumulator not setup yet" ));
   if( !sp                ) ERROR(( "Invalid species" ));
   if( w < 0              ) ERROR(( "inject_particle: w < 0" ));
 
@@ -88,12 +90,12 @@ vpic_simulation::inject_particle( species_t * sp,
     if( sp->nm>=sp->max_nm )
       WARNING(( "No movers available to age injected  particle" ));
     particle_mover_t * pm = sp->pm + sp->nm;
-    age *= grid->cvac*grid->dt/sqrt( ux*ux + uy*uy + uz*uz + 1 );
+    age *= grid->cvac*grid->dt;///sqrt( ux*ux + uy*uy + uz*uz + 1 );
     pm->dispx = ux*age*grid->rdx;
     pm->dispy = uy*age*grid->rdy;
     pm->dispz = uz*age*grid->rdz;
     pm->i     = sp->np-1;
-    sp->nm += move_p( sp->p, pm, field_array->k_jf_accum_h, grid, sp->q );
+    sp->nm += hyb_move_p( sp->p, pm, accumulator_array->a, grid, sp->q );
   }
 
 }

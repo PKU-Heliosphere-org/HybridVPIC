@@ -11,6 +11,8 @@
 #include "pipelines/pipelines.h"
 #include "profile/profile.h"
 
+BEGIN_C_DECLS
+
 // Boot all util functionality (should be the first thing in the program)
 
 void
@@ -34,5 +36,7 @@ extern double _boot_timestamp;
 
 double
 uptime( void );
+
+END_C_DECLS
 
 #endif // _util_h_

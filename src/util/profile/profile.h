@@ -2,7 +2,6 @@
 #define _profile_h_
 
 #include "../util_base.h"
-#include <chrono>
 
 // To add a named timer to the profile, add a line to this macro in
 // the position you want the times to appear in the profile dumps.  To
@@ -41,25 +40,8 @@
   _( user_particle_injection ) \
   _( user_current_injection ) \
   _( user_field_injection ) \
-  _( sort_particles ) \
-  _( field_sa_contributions ) \
-  _( dump_energies ) \
-  _( FIELD_DATA_MOVEMENT ) \
-  _( PARTICLE_DATA_MOVEMENT ) \
-  _( JF_ACCUM_DATA_MOVEMENT ) \
-  _( INTERPOLATOR_DATA_MOVEMENT ) \
-  _( BACKFILL ) \
-  _( BACKFILL_COMPRESS ) \
-  _( user_data_movement ) \
   _( user_diagnostics  )
 
-enum profile_internal_use_only_timers {
-  profile_internal_use_only_invalid_timer = -1,
-# define PROFILE_INTERNAL_USE_ONLY( timer ) profile_internal_use_only_##timer,
-  PROFILE_TIMERS( PROFILE_INTERNAL_USE_ONLY )
-# undef PROFILE_INTERNAL_USE_ONLY
-  profile_internal_use_only_n_timer
-};
 // TIC / TOC are used to update the timing profile.  For example:
 //
 //   TIC { for( n=0; n<n_iter; n++ ) foo(); } TOC( foo, n_iter );
@@ -75,44 +57,20 @@ enum profile_internal_use_only_timers {
 #define TOC(timer,n_calls)                                            \
     while(0);                                                         \
     profile_internal_use_only[profile_internal_use_only_##timer].t += \
-    wallclock() - _profile_tic;                                       \
-    profile_internal_use_only[profile_internal_use_only_##timer].n += \
-      (n_calls);                                                      \
-  } while(0);
-
-// TODO: these unsafe macros should be removed, but I didn't want to fight with all the extra while loop and scoping.
-//#define KOKKOS_TIC()
-//  do {
-//    std::chrono::high_resolution_clock::time_point _profile_tic = std::chrono::high_resolution_clock::now();
-#define KOKKOS_TIC()                                                  \
-  do {                                                                \
-    double _profile_tic = wallclock();
-
-// This macro:
-// 1) is more flexible but stronger scoped than the normal TIC
-// 2) calls kokkos::fence, and thus has performance over head
-//#define KOKKOS_TOC_(timer,n_calls, should_barrier)
-//    profile_internal_use_only[profile_internal_use_only_##timer].t +=
-//      (std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - _profile_tic)).count();
-//    profile_internal_use_only[profile_internal_use_only_##timer].n +=
-//      (n_calls);
-//  } while(0);
-//  if (should_barrier) Kokkos::fence();
-
-#define KOKKOS_TOC_(timer,n_calls, should_barrier)                     \
-    if (should_barrier) Kokkos::fence(); \
-    profile_internal_use_only[profile_internal_use_only_##timer].t += \
       wallclock() - _profile_tic;                                     \
     profile_internal_use_only[profile_internal_use_only_##timer].n += \
       (n_calls);                                                      \
-  } while(0);
-
-#define KOKKOS_TOC(timer,n_calls) KOKKOS_TOC_(timer, n_calls, 1)
-// N for no barrier
-#define KOKKOS_TOCN(timer,n_calls) KOKKOS_TOC_(timer, n_calls, 0)
+  } while(0)
 
 // Do not touch these
 
+enum profile_internal_use_only_timers {
+  profile_internal_use_only_invalid_timer = -1,
+# define PROFILE_INTERNAL_USE_ONLY( timer ) profile_internal_use_only_##timer,
+  PROFILE_TIMERS( PROFILE_INTERNAL_USE_ONLY )
+# undef PROFILE_INTERNAL_USE_ONLY
+  profile_internal_use_only_n_timer
+};
 
 typedef struct profile_internal_use_only_timer {
   const char * name;
@@ -121,6 +79,8 @@ typedef struct profile_internal_use_only_timer {
 } profile_internal_use_only_timer_t;
 
 extern profile_internal_use_only_timer_t profile_internal_use_only[];
+
+BEGIN_C_DECLS
 
 // Updates the cumulative profile, resets the local profile and, if
 // dump is true, writes the local and cumulative profiles to the log.
@@ -133,5 +93,7 @@ update_profile( int dump );
 
 double
 wallclock( void );
+
+END_C_DECLS
 
 #endif // _profile_h_

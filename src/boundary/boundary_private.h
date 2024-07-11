@@ -41,6 +41,8 @@ struct particle_bc {
   particle_bc_t * next;
 };
 
+BEGIN_C_DECLS
+
 void
 checkpt_particle_bc_internal( const particle_bc_t * pbc );
 
@@ -57,6 +59,8 @@ new_particle_bc_internal( void * params,
 
 void
 delete_particle_bc_internal( particle_bc_t * pbc );
+
+END_C_DECLS
 
 #endif /* _boundary_h_ */
 

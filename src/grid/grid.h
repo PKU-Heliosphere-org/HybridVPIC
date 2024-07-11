@@ -1,4 +1,4 @@
-/*
+/* 
  * Written by:
  *   Kevin J. Bowers, Ph.D.
  *   Plasma Physics Group (X-1)
@@ -12,7 +12,6 @@
 #define _grid_h_
 
 #include "../util/util.h"
-#include "../vpic/kokkos_helpers.h"
 
 #define BOUNDARY(i,j,k) (13+(i)+3*(j)+9*(k)) /* FORTRAN -1:1,-1:1,-1:1 */
 
@@ -47,7 +46,7 @@ enum grid_enums {
   // B_tang  -> Symmetric           | B_tang  -> Anti-symmetric
   // E_norm  -> Symmetric           | E_norm  -> Anti-symmetric (see note)
   // div B   -> Symmetric           | div B   -> Anti-symmetric
-  //
+  // 
   // Note: B_norm is tricky. For a symmetry plane, B_norm on the
   // boundary must be zero as there are no magnetic charges (a
   // non-zero B_norm would imply an infinitesimal layer of magnetic
@@ -81,7 +80,7 @@ typedef struct grid {
   int64_t step;             // Current timestep
   double t0;                // Simulation time corresponding to step 0
 
-  // Phase 2 grid data structures
+  // Phase 2 grid data structures 
   float x0, y0, z0;         // Min corner local domain (must be coherent)
   float x1, y1, z1;         // Max corner local domain (must be coherent)
   int   nx, ny, nz;         // Local voxel mesh resolution.  Voxels are
@@ -121,11 +120,6 @@ typedef struct grid {
                           // voxel with local index "lidx".  Negative
                           // if neighbor is a boundary condition.
 
-  //Kokkos::View<int64_t*, Kokkos::HostSpace, Kokkos::MemoryUnmanaged>
-      //h_neighbors(g->neighbor, nfaces_per_voxel * nvoxels);
-  //auto d_neighbors = Kokkos::create_mirror_view_and_copy(Kokkos::DefaultExecutionSpace(), h_neighbors);
-  //
-
   int64_t rangel, rangeh; // Redundant for move_p performance reasons:
                           //   rangel = range[rank]
                           //   rangeh = range[rank+1]-1.
@@ -133,44 +127,11 @@ typedef struct grid {
 
   // Nearest neighbor communications ports
   mp_t * mp;
-  mp_t* mp_k;
-  //  mp_kokkos_t* mp_k;
-  //    int max_ports;
-  //    k_mpi_t k_mpi_d;
-  //    k_mpi_t::HostMirror k_mpi_h;
 
-  k_neighbor_t k_neighbor_d;                // kokkos neighbor view on device
-  k_neighbor_t::HostMirror k_neighbor_h;    // kokkos neighbor view on host
-
-  // We want to call this *only* once the neighbor is done
-  void init_kokkos_grid(int num_neighbor)
-  {
-      k_neighbor_d = k_neighbor_t("k_neighbor_d", num_neighbor);
-      //k_neighbor_h = Kokkos::create_mirror_view_and_copy(Kokkos::DefaultExecutionSpace(), k_neighbor_d);
-      k_neighbor_h = Kokkos::create_mirror_view(k_neighbor_d);
-
-      Kokkos::parallel_for("Copy neighbors to host+device",
-              Kokkos::RangePolicy<Kokkos::DefaultHostExecutionSpace>(0,
-                  num_neighbor), KOKKOS_CLASS_LAMBDA (const int i)
-      {
-          k_neighbor_h(i) = neighbor[i];
-      });
-
-      Kokkos::deep_copy(k_neighbor_d, k_neighbor_h);
-
-      //Kokkos::View<int64_t*, Kokkos::HostSpace, Kokkos::MemoryUnmanaged>
-      //k_neighbor_h(neighbor, num_neighbor);
-
-      // Copy data over
-      // currently implied by unmanaged view
-
-      //k_neighbor_d = Kokkos::create_mirror_view(k_neighbor_d);
-
-      //        max_ports = 27;
-      //      k_mpi_d = k_mpi_t("k_mpi_d");
-      //      k_mpi_h = Kokkos::create_mirror_view(k_mpi_d);
-  }
-
+  float te;               //ARI: electron temperature for hybrid
+  float eta, hypereta,gamma,den; //resistivity, electron adiabatic index,background density
+  float nsub, isub;       //for tracking field subcycling
+  int nsm, nsmb;          //conservative smoothing passes, smooth B fields every nsmb steps
 
 } grid_t;
 
@@ -191,7 +152,7 @@ typedef struct grid {
 // inner loops.)
 //
 // This is written with seeming extraneously if tests in order to get
-// the compiler to generate branceless conditional move and add
+// the compiler to generate branceless conditional move and add 
 // instructions (none of the branches below are actual branches in
 // assembly).
 
@@ -204,6 +165,8 @@ typedef struct grid {
   if( (y)>(yh) ) (v) += ((ny)-(yh)+(yl)+1)*((nx)+2);       \
   if( (y)>(yh) ) (z)++;                                    \
   if( (y)>(yh) ) (y) = (yl)
+
+BEGIN_C_DECLS
 
 // In grid_structors.c
 
@@ -331,8 +294,6 @@ end_recv_port( int i, // x port coord ([-1,0,1])
                int k, // z port coord ([-1,0,1])
                const grid_t * g );
 
-// Kokkos versions
-
 // Complete the pending send on the given port.  Only valid to call if
 // there is a pending send on the port.  Note that this guarantees
 // that send port is available to the caller for additional use, not
@@ -345,34 +306,6 @@ end_send_port( int i, // x port coord ([-1,0,1])
                int k, // z port coord ([-1,0,1])
                const grid_t * g );
 
-// Star receiving a message from the node.
-// Only one message recv may be pending at a time on a given port.
-// Must pass receive buffer of necessary size/
-void begin_recv_port_kokkos(const grid_t* g, int port, int size, int tag, char* ALIGNED(128) recv_buf);
-void begin_recv_port_k(int i, int j, int k, int size, const grid_t* g, char* recv_buf);
-
-// Begin sending size bytes of the buffer out the given port.  Only
-// one message send may be pending at a time on a given port.  (FIXME:
-// WHAT HAPPENS IF SIZE_SEND_PORT size < begin_send_port
-// size??)
-void begin_send_port_kokkos(const grid_t* g, int port, int size, int tag, char* ALIGNED(128) send_buf);
-void begin_send_port_k(int i, int j, int k, int size, const grid_t* g, char* send_buf);
-
-// Complete the pending recv on the given port.  Only valid to call if
-// there is a pending recv.  Received data put into original receive buffer
-// from begin_recv.   (FIXME: WHAT HAPPENS IF EXPECTED RECV SIZE
-// GIVEN IN BEGIN_RECV DOES NOT MATCH END_RECV??)
-void end_recv_port_kokkos(const grid_t* g, int port);
-void* end_recv_port_k(int i, int j, int k, const grid_t* g);
-
-// Complete the pending send on the given port.  Only valid to call if
-// there is a pending send on the port.  Note that this guarantees
-// that send port is available to the caller for additional use, not
-// necessarily that the message has arrived at the destination of the
-// port.
-void end_send_port_kokkos(const grid_t* g, int port);
-void end_send_port_k(int i, int j, int k, const grid_t* g);
-
 // In distribute_voxels.c
 
 // Given a block of voxels to be processed, determine the number of
@@ -383,7 +316,7 @@ void end_send_port_k(int i, int j, int k, const grid_t* g);
 // ordering (e.g. inner loop increments x-index).
 //
 // jobs are indexed from 0 to n_job-1.  jobs are _always_ have the
-// number of voxels an integer multiple of the bundle size.  If job
+// number of voxels an integer multiple of the bundle size.  If job 
 // is set to n_job, this function will determine the parameters of
 // the final incomplete bundle.
 
@@ -403,5 +336,7 @@ void end_send_port_k(int i, int j, int k, const grid_t* g);
     (z)  = _z+_z0;                                                      \
     (nv) = _nv;                                                         \
   } while(0)
+
+END_C_DECLS
 
 #endif
