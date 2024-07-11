@@ -3,12 +3,10 @@ SHELL = csh
 
 # Directory of precompiled VPIC libraries:
 
-#a PROJECTDIR = /project/projectdirs/ntrain7/hybridVPIC/build-haswell/bin
-PROJECTDIR = ../../build/bin
-
+PROJECTDIR = /project/projectdirs/ntrain7/hybridVPIC/build-haswell/bin
 
 all:
-	${PROJECTDIR}/vpic shock-hyb.cxx	
+	${PROJECTDIR}/vpic iaw.cxx	
 
 cleanall: 	
 #	cd translate; make clean 

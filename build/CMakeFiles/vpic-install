@@ -1,0 +1,7 @@
+#! /usr/bin/env bash
+
+deck=`echo $1 | sed 's,\.cxx,,g;s,\.cc,,g;s,\.cpp,,g;s,.*\/,,g'`
+
+echo "/Library/Developer/CommandLineTools/usr/bin/c++ -rdynamic -I. -I/usr/local/include/vpic -DINPUT_DECK=$1 /usr/local/share/vpic/main.cc /usr/local/share/vpic/wrapper.cc -o $deck.Darwin -Wl,-rpath,/usr/local/lib -L/usr/local/lib -lvpic /opt/homebrew/Cellar/open-mpi/5.0.3_1/lib/libmpi.dylib /opt/homebrew/Cellar/open-mpi/5.0.3_1/lib/libmpi.dylib -lpthread -ldl"
+
+/Library/Developer/CommandLineTools/usr/bin/c++ -rdynamic -I. -I/usr/local/include/vpic -DINPUT_DECK=$1 /usr/local/share/vpic/main.cc /usr/local/share/vpic/wrapper.cc -o $deck.Darwin -Wl,-rpath,/usr/local/lib -L/usr/local/lib -lvpic /opt/homebrew/Cellar/open-mpi/5.0.3_1/lib/libmpi.dylib /opt/homebrew/Cellar/open-mpi/5.0.3_1/lib/libmpi.dylib -lpthread -ldl
