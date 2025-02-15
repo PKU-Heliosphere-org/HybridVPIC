@@ -1611,7 +1611,7 @@ begin_particle_injection {
   int i_particle  = global->i_particle;   // ion particle index
   int alpha_particle  = global->alpha_particle;   // alpha particle index
   int pui_particle  = global->pui_particle;   // pui particle index
-  double pui_flux = PUI_flux_to_right(33.5,1.4,5,global->ur,10.07);
+  //double pui_flux = PUI_flux_to_right(33.5,1.4,5,global->ur,10.07);
   //const double denominator = integral_flux(global->ur, 0.01, 0.01);
   //std::cout<<denominator/speed_cdf(1,33.5,1.4,5)/pow(10.07,3)<<" "<<pui_flux<<"\n";
   //std::cout<<speed_pdf(1,33.5,1.4,5)<<"\n";
@@ -1694,10 +1694,10 @@ begin_particle_injection {
         else{
           double ux_pui, uy_pui, uz_pui, V, Vc;
           double theta_pui, phi_pui;
-          Vc = 10.07;
+          //Vc = 10.07;
          //double x_pui = uniform(rng(0), grid->x1-2*hx, grid->x1);
-          theta_pui = acos(uniform(rng(0),-1,global->ur/Vc));
-          phi_pui = uniform(rng(0),0,2*M_PI);
+          // theta_pui = acos(uniform(rng(0),-1,global->ur/Vc));
+          // phi_pui = uniform(rng(0),0,2*M_PI);
 
           //V = Vc*inverse_cdf(uniform(rng(0),0,1), 1e-3);
           
