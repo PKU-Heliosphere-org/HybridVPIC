@@ -13,6 +13,7 @@
 #include "tracer.hh" // Rountines to trace the particles
 #include "hdf5.h"
 #include "time_average_master.hh"
+#include "injection_for_arbitary_VDF.hh"
 
 //////////////////////////////////////////////////////
 #define NUMFOLD (rank()/16)
@@ -141,19 +142,24 @@ begin_globals {
   int tag;
   double mi_me;
   int Ntracer;
-
+  double PUI_flux;
+  double PUI_flux_normalized;
+  double alpha_PUI;
+  double r;
+  double Vc; 
   int stride_particle_dump;  // stride for particle dump
 
 };
 
 // Define the PUI velocity distribution and generator the random number
+/*
 double stepFunction(double x) {  
     if (x < 0) {  
         return 0.0; 
     } else {  
         return 1.0;  
     }  
-}  
+}  */
 double velocity_pdf(double x, double r, double alpha, double eta) {  
     // 
     double lambda = 3.4;
@@ -184,12 +190,17 @@ double PUI_flux_to_right(double r, double alpha, double eta, double v_u, double 
   double S=0;
   double delta_v = 0.01;
   double delta_theta = 0.01*M_PI/2;
-  double n0 = speed_cdf(1, r, alpha, eta);
+  double N0 = speed_cdf(1, r, alpha, eta);
   for (int i = 0; i<floor(sqrt(v_b*v_b-v_u*v_u)/delta_v);++i){
-    for (int j = 0; j<floor(M_PI/2/delta_theta);++j){
+    for (int j = 1; j<floor(M_PI/2/delta_theta);++j){
       double w = sqrt(i*i*delta_v*delta_v+2*i*delta_v*v_u*cos(j*delta_theta)+v_u*v_u)/v_b;
-      S += 2*M_PI*velocity_pdf(w, r, alpha, eta)*pow(w,3)*cos(j*delta_theta)*sin(j*delta_theta)*delta_v*delta_theta/n0;
+      //std::cout<<"i="<<i<<" "<<"w="<<w<<"\n";
+      S += 2*M_PI*velocity_pdf(w, r, alpha, eta)*w*w*w*cos(j*delta_theta)*sin(j*delta_theta)*delta_v*delta_theta/N0;
+      // if (i%20==0){
+      // std::cout<<"w="<<w<<"\n";
+      // }
     }
+    
   }
   return S;
 }
@@ -284,10 +295,11 @@ begin_initialization {
   double hx = Lx/nx;
   double hy = Ly/ny;
   double hz = Lz/nz;
-
+  double N_i2N_pui = 5;//1/0.058;
+  double N_i2N_alpha = 11.65;
   double Ni  = nppc*nx*ny*nz;         // Total macroparticle ions in box
-  double Nalpha = nppc*nx*ny*nz/11.65;
-  double Npui  = nppc*nx*ny*nz*0.058;         // Total macroparticle PUIs in box
+  double Nalpha = nppc*nx*ny*nz/N_i2N_alpha;
+  double Npui  = nppc*nx*ny*nz/N_i2N_pui;         // Total macroparticle PUIs in box
   double Ne  = Ni+Npui;         // Total macroparticle electrons in box
   double Np = n0*Lx*Ly*Lz;            // Total physical ions.
 
@@ -347,6 +359,11 @@ begin_initialization {
   int Hparticle_interval = interval;
   int quota_check_interval     = 100;
   int stride_particle_dump = 40; // stride for particle dump
+  double r = 33.5;
+  double alpha_PUI = 1.4;
+  double Vc = 10.07;
+  double PUI_flux = integral_flux(Vd, 0.01, 0.01);
+  double PUI_flux_normalized = integral_flux(Vd, 0.01, 0.01)/speed_cdf(1, r, alpha_PUI, 5)/pow(Vc, 3);
   
   // Determine which domains area along the boundaries - Use macro from
   // grid/partition.c.
@@ -398,11 +415,11 @@ begin_initialization {
   global->q[1]  = qa;
   global->q[2]  = qi;
   global->npleft[0]  = n0;
-  global->npleft[1]  = n0/11.65;
-  global->npleft[2]  = n0*0.058;
+  global->npleft[1]  = n0/N_i2N_alpha;
+  global->npleft[2]  = n0/N_i2N_pui;
   global->npright[0]  = n0;
-  global->npright[1]  = n0/11.65;
-  global->npright[2]  = n0*0.058;
+  global->npright[1]  = n0/N_i2N_alpha;
+  global->npright[2]  = n0/N_i2N_pui;
   global->vth[0]  = sqrt(2.)*vthi;
   global->vth[1]  = sqrt(2.)*vtha;
   global->vth[2]  = sqrt(2.)*vthi;
@@ -432,6 +449,11 @@ begin_initialization {
   global->pui_particle_select = pui_particle_select;
   // particle dump
   global->stride_particle_dump = stride_particle_dump;
+  global->PUI_flux = PUI_flux;
+  global->PUI_flux_normalized = PUI_flux_normalized;
+  global->alpha_PUI = alpha_PUI;
+  global->r = r;
+  global->Vc = Vc;
  
   //////////////////////////////////////////////////////////////////////////////
   // Setup the grid
@@ -742,9 +764,9 @@ sim_log( "Loading fields" );
      theta_pui = acos(uniform(rng(0),-1,1));
      phi_pui = uniform(rng(0),0,2*M_PI);
      V = Vc*inverse_cdf(uniform(rng(0),0,1), 1e-3);
-     ux_pui = V*sin(theta_pui)*cos(phi_pui)-Vd;
+     ux_pui = V*cos(theta_pui)-Vd;
      uy_pui = V*sin(theta_pui)*sin(phi_pui);
-     uz_pui = V*cos(theta_pui);
+     uz_pui = V*sin(theta_pui)*cos(phi_pui);
 
      //inject_particle( ion, x_swi, y_swi, z_swi, ux_swi, uy_swi, uz_swi, qi, 0, 0);
      inject_particle( pui, x_pui, y_pui, z_pui, ux_pui, uy_pui, uz_pui, qi, 0, 0);
@@ -1582,31 +1604,44 @@ begin_particle_injection {
 
         if (global->right) {
           //std::cout<<nsp<<"\n";
+  //            std::cout<<"Time step= "<<step()<<"\n";
   int num_i_tracer    = global->num_i_tracer;
   int num_alpha_tracer    = global->num_alpha_tracer;
   int num_pui_tracer    = global->num_pui_tracer;   // tracer index
   int i_particle  = global->i_particle;   // ion particle index
   int alpha_particle  = global->alpha_particle;   // alpha particle index
   int pui_particle  = global->pui_particle;   // pui particle index
-          double pui_flux = PUI_flux_to_right(33.5,1.4,5,global->ur,10.07);
+  double pui_flux = PUI_flux_to_right(33.5,1.4,5,global->ur,10.07);
+  //const double denominator = integral_flux(global->ur, 0.01, 0.01);
+  //std::cout<<denominator/speed_cdf(1,33.5,1.4,5)/pow(10.07,3)<<" "<<pui_flux<<"\n";
+  //std::cout<<speed_pdf(1,33.5,1.4,5)<<"\n";
       for ( int n=1; n<=nsp; n++ ) { 
 	species_t * species = find_species_id(n-1,species_list );  
   //std::cout<<species->np<<"\n";
   species_t *tracer = find_species_id(n+2, global->tracers_list);
   //std::cout<<n<<" "<<tracer->name<<"\n";
 	for ( int k=1;k<=nz; k++ ) {
+    //std::cout<<k<<"**********"<<"\n";
 	  for ( int j=1;j<=ny; j++ ) {
 	    vtherm = sqrt(2.0*pright(1,1,n,k,j)/nright(n,k,j));
       //std::cout <<"n="<<n<<", vth="<<vtherm <<"\n";
 	    vd =  (global->ur)/vtherm;
       if (n!=nsp){
 	      bright(n,k,j) = bright(n,k,j)+ dt*nright(n,k,j)*vtherm*(exp(-vd*vd)/sqpi+vd*(erf(vd)+1))/(2*hx);
+       
       }
       else{
-        bright(n,k,j) = bright(n,k,j)+ dt*nright(n,k,j)*pui_flux/hx+dt*nright(n,k,j)*(global->ur)/hx;//escape PUIs plus inject PUI flow
+        bright(n,k,j) = bright(n,k,j)+dt*nright(n,k,j)*global->PUI_flux_normalized/hx;//escape PUIs plus inject PUI flow
         //bright(n,k,j) = bright(n,k,j)+ dt*nright(n,k,j)*(global->ur)/hx;//inject PUI flow
+        //std::cout<<dt*nright(n,k,j)*pui_flux/hx+dt*nright(n,k,j)*(global->ur)/hx<<" "<<denominator*nright(n,k,j)*dt/hx<<"\n";
       }
 	    inject = (long) bright(n,k,j);
+      // if (n==1){
+      //   std::cout << vtherm*(exp(-vd*vd)/sqpi+vd*(erf(vd)+1))/(2*hx)<<" "<<inject <<"\n";
+      // }
+      // if (n==3){
+      //   std::cout << (dt*nright(n,k,j)*pui_flux/hx)/dt*hx/nright(n,k,j) <<" "<<inject <<"\n";
+      // }
       //std::cout << inject <<"\n";
 	    bright(n,k,j) = bright(n,k,j) - (double) inject;
 	    double uflow[3] = {uright(1,n,k,j),uright(2,n,k,j),uright(3,n,k,j)};
@@ -1626,6 +1661,7 @@ begin_particle_injection {
         //std::cout<<inject<<"\n";
         if (n!=nsp){
 	      inject_particle(species, x, y, z, uv[0], uv[1], uv[2], abs(q(n)) , age, 0 );
+        //std::cout<<uv[0]<<"\n";
         /*
         if (n==1){
           i_particle++;
@@ -1659,13 +1695,17 @@ begin_particle_injection {
           double ux_pui, uy_pui, uz_pui, V, Vc;
           double theta_pui, phi_pui;
           Vc = 10.07;
-          theta_pui = acos(uniform(rng(0),-1,1));
+         //double x_pui = uniform(rng(0), grid->x1-2*hx, grid->x1);
+          theta_pui = acos(uniform(rng(0),-1,global->ur/Vc));
           phi_pui = uniform(rng(0),0,2*M_PI);
 
-          V = Vc*inverse_cdf(uniform(rng(0),0,1), 1e-3);
-          ux_pui = V*sin(theta_pui)*cos(phi_pui)-global->ur;
-          uy_pui = V*sin(theta_pui)*sin(phi_pui);
-          uz_pui = V*cos(theta_pui);
+          //V = Vc*inverse_cdf(uniform(rng(0),0,1), 1e-3);
+          
+          std::vector<double> random_velocity = rejection_sampling_cylindrical(global->ur, 2, global->PUI_flux);
+          ux_pui = -random_velocity[0];//-inverse_F(uniform(rng(0),0,1),global->ur,1e-1,1e-1);//V*sin(theta_pui)*cos(phi_pui)-global->ur;
+          uy_pui = random_velocity[1];
+          uz_pui = random_velocity[2];
+          //std::cout<<ux_pui<<" "<<uy_pui<<" "<<uz_pui<<"\n";
           inject_particle(species, x, y, z, ux_pui, uy_pui, uz_pui, abs(q(n)) , age, 0 );
              
           pui_particle++;
