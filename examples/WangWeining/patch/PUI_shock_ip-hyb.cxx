@@ -13,7 +13,7 @@
 #include "tracer.hh" // Rountines to trace the particles
 #include "hdf5.h"
 #include "time_average_master.hh"
-#include "injection_for_arbitary_VDF.hh"
+#include "injection_for_PUI.hh"
 
 //////////////////////////////////////////////////////
 #define NUMFOLD (rank()/16)
@@ -35,7 +35,6 @@ typedef struct emf {
 
 // Whether only electrons carry current (for forcefree sheet only)
 #define ELECTRONS_CARRRY_CURRENT
-
 // Whether to use HDF5 format for dumping fields and hydro
 #define DUMP_WITH_HDF5
 
@@ -144,9 +143,10 @@ begin_globals {
   int Ntracer;
   double PUI_flux;
   double PUI_flux_normalized;
-  double alpha_PUI;
-  double r;
-  double Vc; 
+  double M;
+  // double alpha_PUI;
+  // double r;
+  // double Vc; 
   int stride_particle_dump;  // stride for particle dump
 
 };
@@ -160,69 +160,33 @@ double stepFunction(double x) {
         return 1.0;  
     }  
 }  */
-double velocity_pdf(double x, double r, double alpha, double eta) {  
-    // 
-    double lambda = 3.4;
+// double velocity_pdf(double x, double r, double alpha, double eta) {  
+//     // 
+//     double lambda = 3.4;
     
-    if (x <= 0) return 0.0;  
-    return pow(x,alpha-3)*exp(-lambda/r*pow(x,-alpha))*stepFunction(1-x) ; // 
-}
-double speed_pdf(double x, double r, double alpha, double eta) {  
-    // 
-    double lambda = 3.4;
-    
-    if (x <= 0) return 0.0;  
-    return 4*M_PI*pow(x,alpha-1)*exp(-lambda/r*pow(x,-alpha))*stepFunction(1-x) ; // 
-}  
-double speed_cdf(double x, double r, double alpha, double eta) {  
-    // 
-    double lambda = 3.4;
-    double delta_x = 0.001;
-    double S = 0;
-  
-    for (int i = 0; i < floor(x/delta_x); ++i){
-        S = S + speed_pdf(i*delta_x, r, alpha, eta)*delta_x;
-    }
-    if (x <= 0) return 0.0;  
-    return S; // 
-} 
-double PUI_flux_to_right(double r, double alpha, double eta, double v_u, double v_b){
-  double S=0;
-  double delta_v = 0.01;
-  double delta_theta = 0.01*M_PI/2;
-  double N0 = speed_cdf(1, r, alpha, eta);
-  for (int i = 0; i<floor(sqrt(v_b*v_b-v_u*v_u)/delta_v);++i){
-    for (int j = 1; j<floor(M_PI/2/delta_theta);++j){
-      double w = sqrt(i*i*delta_v*delta_v+2*i*delta_v*v_u*cos(j*delta_theta)+v_u*v_u)/v_b;
-      //std::cout<<"i="<<i<<" "<<"w="<<w<<"\n";
-      S += 2*M_PI*velocity_pdf(w, r, alpha, eta)*w*w*w*cos(j*delta_theta)*sin(j*delta_theta)*delta_v*delta_theta/N0;
-      // if (i%20==0){
-      // std::cout<<"w="<<w<<"\n";
-      // }
-    }
-    
-  }
-  return S;
-}
-double inverse_cdf(double y, double tol = 1e-3) {  
-    double low = 0;             
-    double high = 1;  
-    double mid; 
-    double alpha = 1.4;
-    double eta = 5, r = 33.5;
-    double n = speed_cdf(1, r, alpha, eta);
-    // std::cout<<n<<"\n";
-    while (high - low > tol) {  
-        mid = (low + high) / 2.0;  
+//     if (x <= 0) return 0.0;  
+//     return pow(x,alpha-3)*exp(-lambda/r*pow(x,-alpha))*stepFunction(1-x) ; // 
+// }
 
-        if (speed_cdf(mid, r, alpha, eta)/n < y) {  
-            low = mid;  
-        } else {  
-            high = mid;  
-        }  
-    }  
-    return (low + high) / 2.0;  
-} 
+// double PUI_flux_to_right(double r, double alpha, double eta, double v_u, double v_b){
+//   double S=0;
+//   double delta_v = 0.01;
+//   double delta_theta = 0.01*M_PI/2;
+//   double N0 = speed_cdf(1, r, alpha, eta);
+//   for (int i = 0; i<floor(sqrt(v_b*v_b-v_u*v_u)/delta_v);++i){
+//     for (int j = 1; j<floor(M_PI/2/delta_theta);++j){
+//       double w = sqrt(i*i*delta_v*delta_v+2*i*delta_v*v_u*cos(j*delta_theta)+v_u*v_u)/v_b;
+//       //std::cout<<"i="<<i<<" "<<"w="<<w<<"\n";
+//       S += 2*M_PI*velocity_pdf(w, r, alpha, eta)*w*w*w*cos(j*delta_theta)*sin(j*delta_theta)*delta_v*delta_theta/N0;
+//       // if (i%20==0){
+//       // std::cout<<"w="<<w<<"\n";
+//       // }
+//     }
+    
+//   }
+//   return S;
+// }
+
 
 begin_initialization {
   
@@ -243,7 +207,7 @@ begin_initialization {
 
   
   // Initial conditions for model:
-  double Vd_Va    = 1.86;           //11.4;             // Alfven Mach number(11.4 for TS, 3.0 for Interplanetary shock)
+  double Vd_Va    = 3;     //1.86;           //11.4;             // Alfven Mach number(11.4 for TS, 3.0 for Interplanetary shock)
   double Ti_Te    = 1/2.6;            // Ion temperature / electron temperature
   double theta    = 90.0 * M_PI / 180.0; // 10.0*M_PI/180.0;  // Shock normal/B field angle
   double beta_i   = 0.037;     //1.0         // Background ion beta
@@ -359,11 +323,16 @@ begin_initialization {
   int Hparticle_interval = interval;
   int quota_check_interval     = 100;
   int stride_particle_dump = 40; // stride for particle dump
-  double r = 33.5;
-  double alpha_PUI = 1.4;
-  double Vc = 10.07;
-  double PUI_flux = integral_flux(Vd, 0.01, 0.01);
-  double PUI_flux_normalized = integral_flux(Vd, 0.01, 0.01)/speed_cdf(1, r, alpha_PUI, 5)/pow(Vc, 3);
+  double factor = (3-alpha_PUI)/alpha_PUI;
+  double f_pui_max = pow(lambda/r_PUI/factor, -factor)*exp(-factor);
+  double PUI_flux = integral_flux(Vd, 0.001, 0.01);
+  double M = pow(Vc,4)*f_pui_max/PUI_flux;
+  double PUI_flux_normalized = integral_flux(Vd, 0.01, 0.01)/speed_cdf(1)/pow(Vc, 3);
+  // double r = 33.5;
+  // double alpha_PUI = 1.4;
+  // double Vc = 10.07;
+  // double PUI_flux = integral_flux(Vd, 0.01, 0.01);
+  
   
   // Determine which domains area along the boundaries - Use macro from
   // grid/partition.c.
@@ -449,11 +418,12 @@ begin_initialization {
   global->pui_particle_select = pui_particle_select;
   // particle dump
   global->stride_particle_dump = stride_particle_dump;
+  global->M = M;
   global->PUI_flux = PUI_flux;
   global->PUI_flux_normalized = PUI_flux_normalized;
-  global->alpha_PUI = alpha_PUI;
-  global->r = r;
-  global->Vc = Vc;
+  // global->alpha_PUI = alpha_PUI;
+  // global->r = r;
+  // global->Vc = Vc;
  
   //////////////////////////////////////////////////////////////////////////////
   // Setup the grid
@@ -1614,7 +1584,7 @@ begin_particle_injection {
   //double pui_flux = PUI_flux_to_right(33.5,1.4,5,global->ur,10.07);
   //const double denominator = integral_flux(global->ur, 0.01, 0.01);
   //std::cout<<denominator/speed_cdf(1,33.5,1.4,5)/pow(10.07,3)<<" "<<pui_flux<<"\n";
-  //std::cout<<speed_pdf(1,33.5,1.4,5)<<"\n";
+  //std::cout<<speed_cdf(1)<<" "<<global->PUI_flux<<"\n";
       for ( int n=1; n<=nsp; n++ ) { 
 	species_t * species = find_species_id(n-1,species_list );  
   //std::cout<<species->np<<"\n";
@@ -1694,14 +1664,14 @@ begin_particle_injection {
         else{
           double ux_pui, uy_pui, uz_pui, V, Vc;
           double theta_pui, phi_pui;
-          //Vc = 10.07;
+          // Vc = 10.07;
          //double x_pui = uniform(rng(0), grid->x1-2*hx, grid->x1);
           // theta_pui = acos(uniform(rng(0),-1,global->ur/Vc));
           // phi_pui = uniform(rng(0),0,2*M_PI);
 
           //V = Vc*inverse_cdf(uniform(rng(0),0,1), 1e-3);
           
-          std::vector<double> random_velocity = rejection_sampling_cylindrical(global->ur, 2, global->PUI_flux);
+          std::vector<double> random_velocity = rejection_sampling_cylindrical(global->ur, global->M, global->PUI_flux);
           ux_pui = -random_velocity[0];//-inverse_F(uniform(rng(0),0,1),global->ur,1e-1,1e-1);//V*sin(theta_pui)*cos(phi_pui)-global->ur;
           uy_pui = random_velocity[1];
           uz_pui = random_velocity[2];
