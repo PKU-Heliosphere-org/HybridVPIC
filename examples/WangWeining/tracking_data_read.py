@@ -109,19 +109,124 @@ class Tracer:
         plt.show()
 
     @staticmethod
-    def plot_energy_variation(*tracers, iptl):
+    def plot_energy_variation_DownstreamFrame(*tracers, iptl_list):
+        # 检查 tracers 和 iptl_list 的长度是否一致
+        if len(tracers) != len(iptl_list):
+            raise ValueError("The number of tracers must be equal to the number of iptl values.")
+
         fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-        for tracer in tracers:
+        for tracer, iptl in zip(tracers, iptl_list):
             x_mat = tracer.data["x"]
             ux_mat = tracer.data["ux"]
             uy_mat = tracer.data["uy"]
             uz_mat = tracer.data["uz"]
-            E_mat = ux_mat**2+uy_mat**2+uz_mat**2
+            E_mat = ux_mat ** 2 + uy_mat ** 2 + uz_mat ** 2
             nframes = tracer.data["nframe"]
             ax.scatter(x_mat[iptl, :], E_mat[iptl, :], c=range(nframes), cmap="jet")
             ax.set_xlabel("x", fontsize=15)
             ax.set_ylabel("E", fontsize=15)
         plt.show()
+
+    def x_shock_arr(self):
+        nframe = self.data["nframe"]
+
+        x_shock = np.zeros(nframe)
+        for i_frame in range(1, nframe):
+            v_threshold = np.max(self.data["ux"][:, i_frame])*0.75
+            ey_threshold = 0.7*np.max(self.data["ey"][:, i_frame])+(1-0.7)*np.min(self.data["ey"][:, i_frame])
+            print(f"step={i_frame}, Threshold velocity={v_threshold}, Threshold ey={ey_threshold}")
+            ux = self.data["ux"][:, i_frame]
+            ey = self.data["ey"][:, i_frame]
+            x = self.data["x"][:, i_frame]
+            shock_dn_idx_1 = np.where(ey > ey_threshold)
+            shock_dn_idx_2 = np.where(ux > v_threshold)
+            x_shock[i_frame] = min(np.max(x[shock_dn_idx_1]), np.max(x[shock_dn_idx_2]))
+        return x_shock
+
+    @staticmethod
+    def plot_energy_variation_ShockFrame(*tracers, iptl_list):
+        # 检查 tracers 和 iptl_list 的长度是否一致
+        if len(tracers) != len(iptl_list):
+            raise ValueError("The number of tracers must be equal to the number of iptl values.")
+
+        fig, axes = plt.subplots(4, 1, figsize=(10, 12))
+        for tracer, iptl in zip(tracers, iptl_list):
+            x = tracer.data["x"][iptl, :]
+            ux = tracer.data["ux"][iptl, :]
+            uy = tracer.data["uy"][iptl, :]
+            uz = tracer.data["uz"][iptl, :]
+            ex = tracer.data["ex"][iptl, :]
+            ey = tracer.data["ey"][iptl, :]
+            ez = tracer.data["ez"][iptl, :]
+            x_shock = tracer.x_shock_arr()
+            E = ux ** 2 + uy ** 2 + uz ** 2
+            nframe = tracer.data["nframe"]
+            ax = axes[0]
+            sc = ax.scatter(x-x_shock, E, c=range(nframe), cmap="jet")
+            # ax.scatter(x[~upstream_condition]-x_shock[~upstream_condition], E[~upstream_condition], c="r")
+            ax.plot(x-x_shock, E, c="k")
+            ax.axvline(0, c="k", linestyle="--")
+            ax.set_xlabel("x", fontsize=15)
+            ax.set_ylabel("E", fontsize=15)
+            cbar = plt.colorbar(sc, ax=ax)
+            ax = axes[1]
+            sc = ax.scatter(x-x_shock, np.cumsum(uy * ey), c=range(nframe), cmap="jet")
+            ax.plot(x - x_shock, np.cumsum(uy * ey), c="k")
+            ax.axvline(0, c="k", linestyle="--")
+            cbar = plt.colorbar(sc, ax=ax)
+            ax = axes[2]
+            sc = ax.scatter(x - x_shock, np.cumsum(ux * ex), c=range(nframe), cmap="jet")
+            ax.plot(x - x_shock, np.cumsum(ux * ex), c="k")
+            ax.axvline(0, c="k", linestyle="--")
+            cbar = plt.colorbar(sc, ax=ax)
+            ax = axes[3]
+            sc = ax.scatter(x - x_shock, np.cumsum(uz * ez), c=range(nframe), cmap="jet")
+            ax.plot(x - x_shock, np.cumsum(uz * ez), c="k")
+            ax.axvline(0, c="k", linestyle="--")
+            cbar = plt.colorbar(sc, ax=ax)
+        plt.show()
+
+    def plot_electric_work_DifferentRegion(self, xc):
+        x_shock_arr = self.x_shock_arr()
+        nptl = self.data["nptl"]
+        w_near_shock_arr = np.zeros(nptl)
+        w_far_shock_arr = np.zeros(nptl)
+        for iptl in range(nptl):
+            ux = self.data["ux"][iptl, :]
+            uy = self.data["uy"][iptl, :]
+            uz = self.data["uz"][iptl, :]
+            ex = self.data["ex"][iptl, :]
+            ey = self.data["ey"][iptl, :]
+            ez = self.data["ez"][iptl, :]
+            w_total = ux*ex + uy * ey + uz*ez
+            condition_near_shock = (np.abs(self.x[iptl, :]-x_shock_arr) < xc)
+            condition_far_shock = self.x[iptl, :] - x_shock_arr <= -xc
+            w_near_shock_arr[iptl] = np.sum(w_total[condition_near_shock])
+            w_far_shock_arr[iptl] = np.sum(w_total[condition_far_shock])
+            # print(f"iptl={iptl}, w_near_shock={np.sum(w_total[condition_near_shock])}")
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+        ax.hist(w_near_shock_arr, label="near", alpha=0.5, color="r")
+        ax.hist(w_far_shock_arr, label="far", alpha=0.5, color="b")
+        ax.set_ylim([0, 800])
+        ax.set_xlabel("Counts", fontsize=15)
+        ax.set_ylabel(r"$W_{q}$", fontsize=15)
+        ax.text(w_near_shock_arr.mean() + 15, 500, fr"$\mathrm{{Mean}}(|x-x_{{\mathrm{{shock}}}}|<{xc})={w_near_shock_arr.mean():.2f}$"
+                , fontsize=15, color="r")
+        ax.text(w_far_shock_arr.mean()-15, 700, fr"$\mathrm{{Mean}}(x-x_{{\mathrm{{shock}}}}<-{xc})={w_far_shock_arr.mean():.2f}$"
+                , fontsize=15, color="b")
+        ax.set_title("Histogram of the electric work in different shock regions", fontsize=15)
+        plt.legend()
+        plt.show()
+
+
+
+
+
+
+
+
+
+
 
 
 #%%
@@ -131,9 +236,18 @@ if __name__ == "__main__":
     name = "pui"
     fname1 = f"{name}s_ntraj{num_particle_traj}_{ratio_emax}emax_turb_amp_0dot36.h5p"
     fname2 = f"{name}s_ntraj{num_particle_traj}_{ratio_emax}emax_turb_amp_0dot18.h5p"
+    fname3 = f"{name}s_ntraj{num_particle_traj}_{ratio_emax}emax_2.h5p"
     fdir = "D:/Research/Codes/Hybrid-vpic/data_ip_shock/trace_data/pui_trace_data/"
     pui_tracer_1 = Tracer(name, fdir, fname1)
     pui_tracer_2 = Tracer(name, fdir, fname2)
-    Tracer.plot_electric_force_work_histogram(pui_tracer_1, pui_tracer_2, title="abc")
-    Tracer.plot_energy_variation(pui_tracer_1, pui_tracer_2, iptl=1)
+    pui_tracer_3 = Tracer(name, fdir, fname3)
+    # Tracer.plot_electric_force_work_histogram(pui_tracer_1, pui_tracer_2, title="abc")
+    # Tracer.plot_energy_variation(pui_tracer_1, pui_tracer_2, pui_tracer_3,
+    #                              iptl_list=[1, 1, 2])
+    x_shock = pui_tracer_2.x_shock_arr()
+    # Tracer.plot_energy_variation_ShockFrame(pui_tracer_3, iptl_list=[1000])
+    # plt.scatter(pui_tracer_2.data["x"][:, 200], pui_tracer_2.data["ey"][:, 200])
+    #plt.scatter(range(pui_tracer_2.data["nframe"]), pui_tracer_2.x_shock_arr())
+    pui_tracer_2.plot_electric_work_DifferentRegion(xc=10)
+    #plt.show()
 
