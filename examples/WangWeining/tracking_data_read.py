@@ -2,6 +2,7 @@ import numpy as np
 import h5py
 import matplotlib.pyplot as plt
 import os
+# from scipy.optimize import leastsq
 import errno
 import palettable
 import pyvista as pv
@@ -110,6 +111,11 @@ class Tracer:
 
     @staticmethod
     def plot_energy_variation_DownstreamFrame(*tracers, iptl_list):
+        """
+        画出在激波下游参考系下的粒子能量变化
+        :*tracers: 长度可变的tracer类的列表
+        :iptl_list:长度和*tracers相同的粒子序号列表，用以决定对于每个tracer要花哪个序号的粒子
+        """
         # 检查 tracers 和 iptl_list 的长度是否一致
         if len(tracers) != len(iptl_list):
             raise ValueError("The number of tracers must be equal to the number of iptl values.")
@@ -140,16 +146,31 @@ class Tracer:
             x = self.data["x"][:, i_frame]
             shock_dn_idx_1 = np.where(ey > ey_threshold)
             shock_dn_idx_2 = np.where(ux > v_threshold)
-            x_shock[i_frame] = min(np.max(x[shock_dn_idx_1]), np.max(x[shock_dn_idx_2]))
+            x_shock[i_frame] = np.max(x[shock_dn_idx_1])#min(np.max(x[shock_dn_idx_1]), np.max(x[shock_dn_idx_2]))
         return x_shock
+
+    def x_shock_arr_fit(self):
+        """
+        用最小二乘线性拟合求出各个时刻激波面的位置
+        """
+        nframe = self.data["nframe"]
+        epoch = range(nframe)
+        x_shock_arr = self.x_shock_arr()
+        slope, intercept = np.polyfit(epoch, x_shock_arr, 1)
+        return slope*epoch+intercept
 
     @staticmethod
     def plot_energy_variation_ShockFrame(*tracers, iptl_list):
+        """
+        画出在激波参考系下的粒子能量变化
+        :*tracers: 长度可变的tracer类的列表
+        :iptl_list:长度和*tracers相同的粒子序号列表，用以决定对于每个tracer要花哪个序号的粒子
+        """
         # 检查 tracers 和 iptl_list 的长度是否一致
         if len(tracers) != len(iptl_list):
             raise ValueError("The number of tracers must be equal to the number of iptl values.")
 
-        fig, axes = plt.subplots(4, 1, figsize=(10, 12))
+        fig, axes = plt.subplots(4, 1, figsize=(15, 18))
         for tracer, iptl in zip(tracers, iptl_list):
             x = tracer.data["x"][iptl, :]
             ux = tracer.data["ux"][iptl, :]
@@ -158,7 +179,7 @@ class Tracer:
             ex = tracer.data["ex"][iptl, :]
             ey = tracer.data["ey"][iptl, :]
             ez = tracer.data["ez"][iptl, :]
-            x_shock = tracer.x_shock_arr()
+            x_shock = tracer.x_shock_arr_fit()
             E = ux ** 2 + uy ** 2 + uz ** 2
             nframe = tracer.data["nframe"]
             ax = axes[0]
@@ -166,28 +187,44 @@ class Tracer:
             # ax.scatter(x[~upstream_condition]-x_shock[~upstream_condition], E[~upstream_condition], c="r")
             ax.plot(x-x_shock, E, c="k")
             ax.axvline(0, c="k", linestyle="--")
-            ax.set_xlabel("x", fontsize=15)
+            ax.set_xlabel("x(from shock)", fontsize=15)
             ax.set_ylabel("E", fontsize=15)
             cbar = plt.colorbar(sc, ax=ax)
-            ax = axes[1]
+            ax = axes[2]
             sc = ax.scatter(x-x_shock, np.cumsum(uy * ey), c=range(nframe), cmap="jet")
             ax.plot(x - x_shock, np.cumsum(uy * ey), c="k")
             ax.axvline(0, c="k", linestyle="--")
             cbar = plt.colorbar(sc, ax=ax)
-            ax = axes[2]
+            cbar.set_label("Epoch", fontsize=15)
+            ax.set_xlabel("x(from shock)", fontsize=15)
+            ax.set_ylabel(r"$W_y$", fontsize=15)
+            # ax.set_title("y direction", fontsize=15)
+            ax = axes[1]
             sc = ax.scatter(x - x_shock, np.cumsum(ux * ex), c=range(nframe), cmap="jet")
             ax.plot(x - x_shock, np.cumsum(ux * ex), c="k")
             ax.axvline(0, c="k", linestyle="--")
             cbar = plt.colorbar(sc, ax=ax)
+            cbar.set_label("Epoch", fontsize=15)
+            ax.set_xlabel("x(from shock)", fontsize=15)
+            ax.set_ylabel(r"$W_x$", fontsize=15)
             ax = axes[3]
             sc = ax.scatter(x - x_shock, np.cumsum(uz * ez), c=range(nframe), cmap="jet")
             ax.plot(x - x_shock, np.cumsum(uz * ez), c="k")
             ax.axvline(0, c="k", linestyle="--")
             cbar = plt.colorbar(sc, ax=ax)
+            cbar.set_label("Epoch", fontsize=15)
+            ax.set_xlabel("x(from shock)", fontsize=15)
+            ax.set_ylabel(r"$W_z$", fontsize=15)
         plt.show()
 
-    def plot_electric_work_DifferentRegion(self, xc):
-        x_shock_arr = self.x_shock_arr()
+    def plot_electric_work_DifferentRegion(self, xc, turbulence=False, turbulence_amplitude=None):
+        """
+        画出在距激波面不同距离的区域中，粒子受到的加速情况
+        :xc: |x-x_shock|<xc的区域被视为是靠近激波面的
+        :turbulence:在模拟过程中是否引入湍动
+        :turbulence_amplitude:用以激发湍动的Alfven波振幅
+        """
+        x_shock_arr = self.x_shock_arr_fit()
         nptl = self.data["nptl"]
         w_near_shock_arr = np.zeros(nptl)
         w_far_shock_arr = np.zeros(nptl)
@@ -207,14 +244,24 @@ class Tracer:
         fig, ax = plt.subplots(1, 1, figsize=(10, 6))
         ax.hist(w_near_shock_arr, label="near", alpha=0.5, color="r")
         ax.hist(w_far_shock_arr, label="far", alpha=0.5, color="b")
-        ax.set_ylim([0, 800])
-        ax.set_xlabel("Counts", fontsize=15)
-        ax.set_ylabel(r"$W_{q}$", fontsize=15)
-        ax.text(w_near_shock_arr.mean() + 15, 500, fr"$\mathrm{{Mean}}(|x-x_{{\mathrm{{shock}}}}|<{xc})={w_near_shock_arr.mean():.2f}$"
+        ax.set_ylim([0, 1200])
+        ax.set_ylabel("Counts", fontsize=15)
+        ax.set_xlabel(r"$W_{q}$", fontsize=15)
+        ax.text(w_near_shock_arr.mean(), 500, fr"$\mathrm{{Mean}}(|x-x_{{\mathrm{{shock}}}}|<{xc})={w_near_shock_arr.mean():.2f}$"
                 , fontsize=15, color="r")
-        ax.text(w_far_shock_arr.mean()-15, 700, fr"$\mathrm{{Mean}}(x-x_{{\mathrm{{shock}}}}<-{xc})={w_far_shock_arr.mean():.2f}$"
+        ax.text(w_far_shock_arr.mean(), 700, fr"$\mathrm{{Mean}}(x-x_{{\mathrm{{shock}}}}<-{xc})={w_far_shock_arr.mean():.2f}$"
                 , fontsize=15, color="b")
-        ax.set_title("Histogram of the electric work in different shock regions", fontsize=15)
+        if turbulence:
+            if turbulence_amplitude is not None:
+                title_suffix = f"\n(Turbulence, Amplitude={turbulence_amplitude})"
+            else:
+                title_suffix = "\n(Turbulence)"
+        else:
+            title_suffix = "\n(No Turbulence)"
+
+        ax.set_title(f"Histogram of the electric work to {self.name}s in different shock regions {title_suffix}",
+                     fontsize=15)
+        plt.legend()
         plt.legend()
         plt.show()
 
@@ -233,21 +280,30 @@ class Tracer:
 if __name__ == "__main__":
     num_particle_traj = 2000
     ratio_emax = 1
-    name = "pui"
-    fname1 = f"{name}s_ntraj{num_particle_traj}_{ratio_emax}emax_turb_amp_0dot36.h5p"
-    fname2 = f"{name}s_ntraj{num_particle_traj}_{ratio_emax}emax_turb_amp_0dot18.h5p"
-    fname3 = f"{name}s_ntraj{num_particle_traj}_{ratio_emax}emax_2.h5p"
-    fdir = "D:/Research/Codes/Hybrid-vpic/data_ip_shock/trace_data/pui_trace_data/"
-    pui_tracer_1 = Tracer(name, fdir, fname1)
-    pui_tracer_2 = Tracer(name, fdir, fname2)
-    pui_tracer_3 = Tracer(name, fdir, fname3)
+    species_name_lst = ["ion", "alpha", "pui"]
+
+    fname1 = f"{species_name_lst[2]}_trace_data/{species_name_lst[2]}s_ntraj{num_particle_traj}_{ratio_emax}emax_turb_amp_0dot36.h5p"
+    fname2 = f"{species_name_lst[2]}_trace_data/{species_name_lst[2]}s_ntraj{num_particle_traj}_{ratio_emax}emax_turb_amp_0dot18.h5p"
+    fname3 = f"{species_name_lst[2]}_trace_data/{species_name_lst[2]}s_ntraj{num_particle_traj}_{ratio_emax}emax.h5p"
+    fname4 = f"{species_name_lst[0]}_trace_data/{species_name_lst[0]}s_ntraj{num_particle_traj}_{ratio_emax}emax.h5p"
+    fname5 = f"{species_name_lst[1]}_trace_data/{species_name_lst[1]}s_ntraj{num_particle_traj}_{ratio_emax}emax.h5p"
+    fdir = f"D:/Research/Codes/Hybrid-vpic/data_ip_shock/trace_data/"
+    pui_tracer_1 = Tracer(species_name_lst[2], fdir, fname1)
+    pui_tracer_2 = Tracer(species_name_lst[2], fdir, fname2)
+    pui_tracer_3 = Tracer(species_name_lst[2], fdir, fname3)
+    ion_tracer = Tracer(species_name_lst[0], fdir, fname4)
+    alpha_tracer = Tracer(species_name_lst[1], fdir, fname5)
     # Tracer.plot_electric_force_work_histogram(pui_tracer_1, pui_tracer_2, title="abc")
     # Tracer.plot_energy_variation(pui_tracer_1, pui_tracer_2, pui_tracer_3,
     #                              iptl_list=[1, 1, 2])
-    x_shock = pui_tracer_2.x_shock_arr()
-    # Tracer.plot_energy_variation_ShockFrame(pui_tracer_3, iptl_list=[1000])
+    # x_shock = pui_tracer_3.x_shock_arr()
+    # Tracer.plot_energy_variation_ShockFrame(pui_tracer_2, iptl_list=[1000])
     # plt.scatter(pui_tracer_2.data["x"][:, 200], pui_tracer_2.data["ey"][:, 200])
-    #plt.scatter(range(pui_tracer_2.data["nframe"]), pui_tracer_2.x_shock_arr())
-    pui_tracer_2.plot_electric_work_DifferentRegion(xc=10)
-    #plt.show()
+    # alpha_tracer.plot_electric_work_DifferentRegion(xc=10)
+    # pui_tracer_2.plot_electric_work_DifferentRegion(xc=10)
+    pui_tracer_2.plot_electric_work_DifferentRegion(xc=10, turbulence=True, turbulence_amplitude=0.18)
+    plt.scatter(range(ion_tracer.data["nframe"]), ion_tracer.x_shock_arr_fit())
+    plt.xlabel("Epoch", fontsize=15)
+    plt.ylabel(r"$x_{\mathrm{shock}}$", fontsize=15)
+    plt.show()
 
