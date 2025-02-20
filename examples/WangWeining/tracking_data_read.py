@@ -2,6 +2,7 @@ import numpy as np
 import h5py
 import matplotlib.pyplot as plt
 import os
+from matplotlib.patches import Patch
 # from scipy.optimize import leastsq
 import errno
 import palettable
@@ -66,9 +67,20 @@ class Tracer:
         raise AttributeError(f"'Tracer' object has no attribute '{attr}'")
 
     @staticmethod
-    def plot_electric_force_work_histogram(*tracers, title="Case for turbulence amplitude=0.36"):
+    def plot_electric_force_work_histogram(*tracers, num_bins=20, color_lst):
+        """
+        画出统计x,y,z三个方向粒子分别受电场力做的总功的统计直方图
+        :*tracers: 长度可变的tracer类的列表
+        :num_bins: 直方图的bin数量
+        """
         fig, axes = plt.subplots(3, 1, figsize=(10, 12))
         labels = [tracer.name for tracer in tracers]
+
+        all_work_x = []
+        all_work_y = []
+        all_work_z = []
+
+        # 收集所有 tracer 在三个方向的功
         for tracer in tracers:
             ex_mat = tracer.data["ex"]
             ey_mat = tracer.data["ey"]
@@ -79,34 +91,72 @@ class Tracer:
             work_x = np.sum(ex_mat * ux_mat, axis=1)
             work_y = np.sum(ey_mat * uy_mat, axis=1)
             work_z = np.sum(ez_mat * uz_mat, axis=1)
-            ax = axes[0]
-            ax.hist(work_x, label=tracer.name, alpha=0.7)
-            ax.set_xlabel(r"$W_x$", fontsize=15)
-            ax.set_ylabel("counts", fontsize=15)
-            ax.set_xlim([-300, 1000])
-            ax.set_ylim([0, 1000])
-            ax = axes[1]
-            ax.hist(work_y, label=tracer.name, alpha=0.7)
-            ax.set_xlabel(r"$W_y$", fontsize=15)
-            ax.set_ylabel("counts", fontsize=15)
-            ax.set_xlim([-300, 1000])
-            ax.set_ylim([0, 1000])
-            ax = axes[2]
-            ax.hist(work_z, label=tracer.name, alpha=0.7)
-            ax.set_xlabel(r"$W_z$", fontsize=15)
-            ax.set_ylabel("counts", fontsize=15)
-            ax.set_xlim([-300, 1000])
-            ax.set_ylim([0, 1000])
-        for i, ax in enumerate(axes):
-            ax.legend()
-            if i == 0:
-                work = np.concatenate([np.sum(tracer.data["ex"] * tracer.data["ux"], axis=1) for tracer in tracers])
-            elif i == 1:
-                work = np.concatenate([np.sum(tracer.data["ey"] * tracer.data["uy"], axis=1) for tracer in tracers])
-            else:
-                work = np.concatenate([np.sum(tracer.data["ez"] * tracer.data["uz"], axis=1) for tracer in tracers])
-            ax.text(500, 800, f"Mean={np.mean(work):.2f}", fontsize=15)
-        plt.suptitle(title, fontsize=16)
+
+            all_work_x.extend(work_x)
+            all_work_y.extend(work_y)
+            all_work_z.extend(work_z)
+
+        all_works = [all_work_x, all_work_y, all_work_z]
+        labels_axis = [r"$W_x$", r"$W_y$", r"$W_z$"]
+        axis_lst = ["x", "y", "z"]
+        legend_handles = []  # 用于存储图例句柄
+        legend_labels = []  # 用于存储图例标签
+        # 颜色列表，可根据需要修改
+        # colors = ['#3498db', '#e74c3c']
+
+        for i, (ax, work, label) in enumerate(zip(axes, all_works, labels_axis)):
+            # 确定数据的整体范围
+            min_val = np.min(work)
+            max_val = np.max(work)
+
+            # 计算统一的 bin 边界
+            bin_edges = np.linspace(min_val, max_val, num_bins + 1)
+
+            text_y_spacing = 200  # 计算每个文本之间的垂直间距
+
+
+
+            for j, tracer in enumerate(tracers):
+                if i == 0:
+                    work_per_tracer = np.sum(tracer.data["ex"] * tracer.data["ux"], axis=1)
+                elif i == 1:
+                    work_per_tracer = np.sum(tracer.data["ey"] * tracer.data["uy"], axis=1)
+                else:
+                    work_per_tracer = np.sum(tracer.data["ez"] * tracer.data["uz"], axis=1)
+                hist = ax.hist(work_per_tracer, bins=bin_edges, label=tracer.name, alpha=0.5, color=color_lst[j],
+                        edgecolor='black', linewidth=0.5)
+                if i == 0:  # 只在第一个子图中收集图例句柄和标签
+                    proxy_patch = Patch(facecolor=color_lst[j], edgecolor='black', label=tracer.name)
+                    legend_handles.append(proxy_patch)
+                    if tracer.name == "ion":
+                        legend_labels.append(r"SWI($\mathrm{H}^+$)")
+                    elif tracer.name == "alpha":
+                        legend_labels.append(r"SWI($\mathrm{He}^{2+}$)")
+                    else:
+                        legend_labels.append("PUI($\mathrm{H}^+$)")
+
+                mean_work = np.mean(work_per_tracer)
+                ylim = ax.get_ylim()
+                start_y = 600  # 起始垂直位置
+                text_y = start_y + j * text_y_spacing  # 计算当前文本的垂直位置
+                xlim = ax.get_xlim()
+                ax.text(xlim[1]*0.4, text_y, fr"Mean($W_{{{axis_lst[i]},\mathrm{{{tracer.name}}}}}$)={mean_work:.2f}", fontsize=15, ha='left',
+                        color=color_lst[j])
+
+            ax.set_xlabel(label, fontsize=15)
+            ax.set_ylabel("Counts", fontsize=15)
+            ax.set_xlim([min_val, max_val])
+            ax.set_ylim(bottom=0)
+            # ax.legend(loc='upper right')
+
+        # 修改主标题
+        plt.suptitle("Electric work histogram for different particle species", fontsize=16)  # 修改为更具描述性的标题
+
+        # 添加浅色背景
+        fig.patch.set_facecolor('#f9f9f9')
+        plt.subplots_adjust(hspace=0.5, bottom=0.2)  # 调整底部间距，为图例留出空间
+
+        fig.legend(legend_handles, legend_labels, loc='lower center', ncol=1, fontsize=15)  # 创建并放置总图例
         plt.show()
 
     @staticmethod
@@ -293,7 +343,7 @@ if __name__ == "__main__":
     pui_tracer_3 = Tracer(species_name_lst[2], fdir, fname3)
     ion_tracer = Tracer(species_name_lst[0], fdir, fname4)
     alpha_tracer = Tracer(species_name_lst[1], fdir, fname5)
-    # Tracer.plot_electric_force_work_histogram(pui_tracer_1, pui_tracer_2, title="abc")
+    Tracer.plot_electric_force_work_histogram(pui_tracer_3, ion_tracer, alpha_tracer, color_lst=['#3498db', '#e74c3c', 'g'])
     # Tracer.plot_energy_variation(pui_tracer_1, pui_tracer_2, pui_tracer_3,
     #                              iptl_list=[1, 1, 2])
     # x_shock = pui_tracer_3.x_shock_arr()
@@ -301,9 +351,9 @@ if __name__ == "__main__":
     # plt.scatter(pui_tracer_2.data["x"][:, 200], pui_tracer_2.data["ey"][:, 200])
     # alpha_tracer.plot_electric_work_DifferentRegion(xc=10)
     # pui_tracer_2.plot_electric_work_DifferentRegion(xc=10)
-    pui_tracer_2.plot_electric_work_DifferentRegion(xc=10, turbulence=True, turbulence_amplitude=0.18)
-    plt.scatter(range(ion_tracer.data["nframe"]), ion_tracer.x_shock_arr_fit())
-    plt.xlabel("Epoch", fontsize=15)
-    plt.ylabel(r"$x_{\mathrm{shock}}$", fontsize=15)
-    plt.show()
+    # pui_tracer_2.plot_electric_work_DifferentRegion(xc=10, turbulence=True, turbulence_amplitude=0.18)
+    # plt.scatter(range(ion_tracer.data["nframe"]), ion_tracer.x_shock_arr_fit())
+    # plt.xlabel("Epoch", fontsize=15)
+    # plt.ylabel(r"$x_{\mathrm{shock}}$", fontsize=15)
+    # plt.show()
 
