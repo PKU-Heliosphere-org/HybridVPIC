@@ -8,9 +8,9 @@ import struct
 ######### loadinfo function
 def loadinfo(dir):
     fstr = dir + "info"
-    fd = open(fstr,"rb")
+    fd = open(fstr, "rb")
     infocontent = fd.read()
-    fd.close
+    fd.close()
     arr = struct.unpack("fIIIffffff", infocontent[:40])
     infoarr=np.zeros(6)
     infoarr[0] = arr[1]
@@ -60,3 +60,16 @@ def load_data_dynamic(fname, num_dim1, num_dim2):
         res = res.reshape(num_dim3, num_dim2, num_dim1).T
 
     return res, num_dim3
+
+
+if __name__ == "__main__":
+    it = 42
+    fdir = "data_ip_shock/field_data_7/data/"
+    infoarr = loadinfo(fdir)
+    nx = int(infoarr[0])
+    nz = int(infoarr[2])
+    Lx = int(infoarr[3])
+    Lz = int(infoarr[5])
+    Bz1 = load_data_at_certain_t(fdir + 'bz.gda', it, nx, nz)
+
+
