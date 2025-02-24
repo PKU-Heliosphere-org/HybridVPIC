@@ -5,7 +5,7 @@ import os
 server_ip = '162.105.246.210'
 server_port = 22
 username = 'wwn'
-password = 'wwn021101'
+password = 'my_password'
 
 # 服务器上的文件夹路径
 remote_folder_path = '/home/wwn/HybridVPIC-main/patch/particle/T.10000/'
