@@ -13,8 +13,13 @@
 #include "tracer.hh" // Rountines to trace the particles
 #include "hdf5.h"
 #include "time_average_master.hh"
+#include "injection_for_PUI.hh"
+#include "turbulence_initialization.cxx"
 
 //////////////////////////////////////////////////////
+const double v_A=1;
+const double b0=1;
+AlfvenWave* waves = init_turbulence_params(1, 64);  // 全局波列表
 #define NUMFOLD (rank()/16)
 // structure to hold the data for energy diagnostics
 struct edata {
@@ -34,7 +39,6 @@ typedef struct emf {
 
 // Whether only electrons carry current (for forcefree sheet only)
 #define ELECTRONS_CARRRY_CURRENT
-
 // Whether to use HDF5 format for dumping fields and hydro
 #define DUMP_WITH_HDF5
 
@@ -115,7 +119,7 @@ begin_globals {
   int left,right;  // Keep track of boundary domains
   double *nleft, *uleft, *pleft, *bleft, *fleft;     // Moments for left injectors
   double *nright, *uright, *pright, *bright, *fright; // Moments for right injectors
-  
+  double n_inject[NUM_SPECS];
   // Output variables
   DumpParameters fdParams;
   DumpParameters hHdParams;
@@ -141,77 +145,52 @@ begin_globals {
   int tag;
   double mi_me;
   int Ntracer;
-
+  double PUI_flux;
+  double PUI_flux_normalized;
+  double M;
+  // double alpha_PUI;
+  // double r;
+  // double Vc; 
   int stride_particle_dump;  // stride for particle dump
 
 };
 
 // Define the PUI velocity distribution and generator the random number
+/*
 double stepFunction(double x) {  
     if (x < 0) {  
         return 0.0; 
     } else {  
         return 1.0;  
     }  
-}  
-double velocity_pdf(double x, double r, double alpha, double eta) {  
-    // 
-    double lambda = 3.4;
+}  */
+// double velocity_pdf(double x, double r, double alpha, double eta) {  
+//     // 
+//     double lambda = 3.4;
     
-    if (x <= 0) return 0.0;  
-    return pow(x,alpha-3)*exp(-lambda/r*pow(x,-alpha))*stepFunction(1-x) ; // 
-}
-double speed_pdf(double x, double r, double alpha, double eta) {  
-    // 
-    double lambda = 3.4;
-    
-    if (x <= 0) return 0.0;  
-    return 4*M_PI*pow(x,alpha-1)*exp(-lambda/r*pow(x,-alpha))*stepFunction(1-x) ; // 
-}  
-double speed_cdf(double x, double r, double alpha, double eta) {  
-    // 
-    double lambda = 3.4;
-    double delta_x = 0.001;
-    double S = 0;
-  
-    for (int i = 0; i < floor(x/delta_x); ++i){
-        S = S + speed_pdf(i*delta_x, r, alpha, eta)*delta_x;
-    }
-    if (x <= 0) return 0.0;  
-    return S; // 
-} 
-double PUI_flux_to_right(double r, double alpha, double eta, double v_u, double v_b){
-  double S=0;
-  double delta_v = 0.01;
-  double delta_theta = 0.01*M_PI/2;
-  double N0 = speed_cdf(1, r, alpha, eta);
-  for (int i = 0; i<floor(sqrt(v_b*v_b-v_u*v_u)/delta_v);++i){
-    for (int j = 0; j<floor(M_PI/2/delta_theta);++j){
-      double w = sqrt(i*i*delta_v*delta_v+2*i*delta_v*v_u*cos(j*delta_theta)+v_u*v_u)/v_b;
-      S += 2*M_PI*velocity_pdf(w, r, alpha, eta)*pow(w,3)*cos(j*delta_theta)*sin(j*delta_theta)*delta_v*delta_theta/N0;
-    }
-  }
-  return S;
-}
-double inverse_cdf(double y, double tol = 1e-3) {  
-    double low = 0;             
-    double high = 1;  
-    double mid; 
-    double alpha = 1.4;
-    double eta = 5, r = 33.5;
-    double n = speed_cdf(1, r, alpha, eta);
-    // std::cout<<n<<"\n";
-    while (high - low > tol) {  
-        mid = (low + high) / 2.0;  
+//     if (x <= 0) return 0.0;  
+//     return pow(x,alpha-3)*exp(-lambda/r*pow(x,-alpha))*stepFunction(1-x) ; // 
+// }
 
-        if (speed_cdf(mid, r, alpha, eta)/n < y) {  
-            low = mid;  
-        } else {  
-            high = mid;  
-        }  
-    }  
-    return (low + high) / 2.0;  
-} 
+// double PUI_flux_to_right(double r, double alpha, double eta, double v_u, double v_b){
+//   double S=0;
+//   double delta_v = 0.01;
+//   double delta_theta = 0.01*M_PI/2;
+//   double N0 = speed_cdf(1, r, alpha, eta);
+//   for (int i = 0; i<floor(sqrt(v_b*v_b-v_u*v_u)/delta_v);++i){
+//     for (int j = 1; j<floor(M_PI/2/delta_theta);++j){
+//       double w = sqrt(i*i*delta_v*delta_v+2*i*delta_v*v_u*cos(j*delta_theta)+v_u*v_u)/v_b;
+//       //std::cout<<"i="<<i<<" "<<"w="<<w<<"\n";
+//       S += 2*M_PI*velocity_pdf(w, r, alpha, eta)*w*w*w*cos(j*delta_theta)*sin(j*delta_theta)*delta_v*delta_theta/N0;
+//       // if (i%20==0){
+//       // std::cout<<"w="<<w<<"\n";
+//       // }
+//     }
+    
+//   }
+//   return S;
+// }
+
 
 begin_initialization {
   
@@ -255,7 +234,7 @@ begin_initialization {
   double sn       = sin(theta);
 
   // Numerical parameters
-  double taui    = 50;    // Simulation run time in wci^-1.
+  double taui    = 100;//50;    // Simulation run time in wci^-1.
   double quota   = 23.5;   // run quota in hours
   double quota_sec = quota*3600;  // Run quota in seconds
   
@@ -291,7 +270,7 @@ begin_initialization {
   double Npui  = nppc*nx*ny*nz/N_i2N_pui;         // Total macroparticle PUIs in box
   double Ne  = Ni+Npui;         // Total macroparticle electrons in box
   double Np = n0*Lx*Ly*Lz;            // Total physical ions.
-  
+
   Ni = trunc_granular(Ni,nproc());// Make it divisible by number of processors
   Nalpha = trunc_granular(Nalpha,nproc());// Make it divisible by number of processors
   Npui = trunc_granular(Npui,nproc());// Make it divisible by number of processors
@@ -348,6 +327,16 @@ begin_initialization {
   int Hparticle_interval = interval;
   int quota_check_interval     = 100;
   int stride_particle_dump = 40; // stride for particle dump
+  double factor = (3-alpha_PUI)/alpha_PUI;
+  double f_pui_max = pow(lambda/r_PUI/factor, -factor)*exp(-factor);
+  double PUI_flux = integral_flux(Vd, 0.001, 0.01);
+  double M = pow(Vc,4)*f_pui_max/PUI_flux;
+  double PUI_flux_normalized = integral_flux(Vd, 0.01, 0.01)/speed_cdf(1)/pow(Vc, 3);
+  // double r = 33.5;
+  // double alpha_PUI = 1.4;
+  // double Vc = 10.07;
+  // double PUI_flux = integral_flux(Vd, 0.01, 0.01);
+  
   
   // Determine which domains area along the boundaries - Use macro from
   // grid/partition.c.
@@ -407,6 +396,9 @@ begin_initialization {
   global->vth[0]  = sqrt(2.)*vthi;
   global->vth[1]  = sqrt(2.)*vtha;
   global->vth[2]  = sqrt(2.)*vthi;
+  global->n_inject[0]=0;
+  global->n_inject[1]=0;
+  global->n_inject[2]=0;
   global->left = left;
   global->right = right;
   global->nfac = nfac;
@@ -433,6 +425,13 @@ begin_initialization {
   global->pui_particle_select = pui_particle_select;
   // particle dump
   global->stride_particle_dump = stride_particle_dump;
+  global->M = M;
+  global->PUI_flux = PUI_flux;
+  global->PUI_flux_normalized = PUI_flux_normalized;
+  
+  // global->alpha_PUI = alpha_PUI;
+  // global->r = r;
+  // global->Vc = Vc;
  
   //////////////////////////////////////////////////////////////////////////////
   // Setup the grid
@@ -554,6 +553,8 @@ begin_initialization {
   sim_log ( "dz/di = " << Lz/(di*nz) );
   sim_log ( "dx/rhoi = " << (Lx/nx)/(vthi/wci)  );
   sim_log ( "n0 = " << n0 );
+  sim_log ("Vc = " << Vc);
+  sim_log ("variation = " << variation);
 
 
  // Dump simulation information to file "info.bin" for translate script
@@ -587,50 +588,14 @@ begin_initialization {
 
   ////////////////////////////
   // Load fields
-double kx0 = 2.0*M_PI/Lx;
-double ky0 = 2.0*M_PI/Ly;
-double kz0 = 2.0*M_PI/Lz;
-double amp = 0.36; //0.18; // amplitude of injected wave relative to Bo
-double imf = 0.71; // the ratio of amplitudes of the two groups of waves propagating to the opposite direction
-  // l --> mode number in X
-  // m --> mode number in Y
-  // n --> mode number in Z
 
-
-//  Alfvenic perturbation with deltaB in the x direction
-//  works only for a pair plasma
-#define DBX_1(l,m,phi) amp*b0*cos(l*kz0*z + m*ky0*y + phi)
-#define DEY_1(l,m,phi) -amp*(l/abs(l))*v_A*b0*cos(l*kz0*z + m*ky0*y + phi)
-// These give velocity & current consistent with Alfven wave
-#define DUX_1(l,m,phi) -amp*(l/abs(l))*v_A*cos(l*kz0*z + m*ky0*y + phi)
-#define DJY_1(l,m,phi) -amp*b0*(l*kz0)*sin(l*kz0*z + m*ky0*y + phi)
-#define DJZ_1(l,m,phi) amp*b0*(m*ky0)*sin(l*kz0*z + m*ky0*y + phi)
-// Single wave propating to the right
-#define BX_PERT_1 DBX_1(1,1,0) + DBX_1(1,2,1.5) + DBX_1(-2,3,3.9)   
-#define EY_PERT_1 DEY_1(1,1,0) + DEY_1(1,2,1.5) + DEY_1(-2,3,3.9)  
-#define UX_PERT_1 DUX_1(1,1,0) + DUX_1(1,2,1.5) + DUX_1(-2,3,3.9)
-#define JY_PERT_1 DJY_1(1,1,0) + DJY_1(1,2,1.5) + DJY_1(-2,3,3.9)
-#define JZ_PERT_1 DJZ_1(1,1,0) + DJZ_1(1,2,1.5) + DJZ_1(-2,3,3.9)
-
-//  Alfvenic perturbation with deltaB in the y direction
-//  works only for a pair plasma
-#define DBY_2(l,m,phi) amp*imf*b0*cos(l*kz0*z + m*kx0*x + phi)
-#define DEX_2(l,m,phi) amp*imf*(l/abs(l))*v_A*b0*cos(l*kz0*z + m*kx0*x + phi)
-// These give velocity & current consistent with Alfven wave
-#define DUY_2(l,m,phi) -amp*imf*(l/abs(l))*v_A*cos(l*kz0*z + m*kx0*x + phi)
-#define DJX_2(l,m,phi) amp*b0*imf*(l*kz0)*sin(l*kz0*z + m*kx0*x + phi)
-#define DJZ_2(l,m,phi) -amp*b0*imf*(m*kx0)*sin(l*kz0*z + m*kx0*x + phi)
-// Single wave propating to the left
-#define BY_PERT_2 DBY_2(-1,1,0.4) + DBY_2(-1,-2,2.56) + DBY_2(2,-3,4.19)   
-#define EX_PERT_2 DEX_2(-1,1,0.4) + DEX_2(-1,-2,2.56) + DEX_2(2,-3,4.19) 
-#define UY_PERT_2 DUY_2(-1,1,0.4) + DUY_2(-1,-2,2.56) + DUY_2(2,-3,4.19)
-#define JX_PERT_2 DJX_2(-1,1,0.4) + DJX_2(-1,-2,2.56) + DJX_2(2,-3,4.19)
-#define JZ_PERT_2 DJZ_2(-1,1,0.4) + DJZ_2(-1,-2,2.56) + DJZ_2(2,-3,4.19)
+// init_turbulence_params(v_A, Lz);
 sim_log( "Loading fields" );
 // Note: everywhere is a region that encompasses the entire simulation                                                                                                                   
 // In general, regions are specied as logical equations (i.e. x>0 && x+y<2) 
-  set_region_field( everywhere, EX_PERT_2, -Vd*b0*sn+EY_PERT_1, 0,
-		    b0*cs+BX_PERT_1, BY_PERT_2, b0*sn ); // Magnetic field
+std::cout<<waves[0].A<<"\n";
+  set_region_field( everywhere, EX_PERT, -Vd*b0*sn+EY_PERT, 0,
+		    b0*cs+BX_PERT, BY_PERT, b0*sn ); // Magnetic field
 
  
  
@@ -660,13 +625,13 @@ sim_log( "Loading fields" );
      x_swi = uniform(rng(0),xmin,xmax);
      y_swi = uniform(rng(0),ymin,ymax);
      z_swi = uniform(rng(0),zmin,zmax);
-    
      double x = x_swi;
      double y = y_swi;
      double z = z_swi;
-     ux_swi = normal( rng(0), 0, vthi)-Vd+UX_PERT_1-JX_PERT_2;//inverse_cdf(uniform(rng(0),0,1), 0.5, 1e-2, 1000)-Vd;//normal( rng(0), 0, vthi)-Vd;
-     uy_swi = normal( rng(0), 0, vthi)-JY_PERT_1*0.5+UY_PERT_2;//inverse_cdf(uniform(rng(0),0,1), 0.5, 1e-2, 1000);//normal( rng(0), 0, vthi);
-     uz_swi = normal( rng(0), 0, vthi)-JZ_PERT_1*0.5-JZ_PERT_2*0.5;//inverse_cdf(uniform(rng(0),0,1), 0.5, 1e-2, 1000);//normal( rng(0), 0, vthi);
+     
+     ux_swi = normal( rng(0), 0, vthi)-Vd+VX_PERT;//inverse_cdf(uniform(rng(0),0,1), 0.5, 1e-2, 1000)-Vd;//normal( rng(0), 0, vthi)-Vd;
+     uy_swi = normal( rng(0), 0, vthi)+VY_PERT;//inverse_cdf(uniform(rng(0),0,1), 0.5, 1e-2, 1000);//normal( rng(0), 0, vthi);
+     uz_swi = normal( rng(0), 0, vthi);//inverse_cdf(uniform(rng(0),0,1), 0.5, 1e-2, 1000);//normal( rng(0), 0, vthi);
      /*
      x_pui = uniform(rng(0),xmin,xmax);
      y_pui = uniform(rng(0),ymin,ymax);
@@ -702,14 +667,13 @@ sim_log( "Loading fields" );
      x_alpha = uniform(rng(0),xmin,xmax);
      y_alpha = uniform(rng(0),ymin,ymax);
      z_alpha = uniform(rng(0),zmin,zmax);
-     
      double x = x_alpha;
      double y = y_alpha;
      double z = z_alpha;
-
-     ux_alpha = normal( rng(0), 0, vtha)-Vd+UX_PERT_1-JX_PERT_2;//inverse_cdf(uniform(rng(0),0,1), 0.5, 1e-2, 1000)-Vd;//normal( rng(0), 0, vthi)-Vd;
-     uy_alpha = normal( rng(0), 0, vtha)-JY_PERT_1*0.5+UY_PERT_2;//inverse_cdf(uniform(rng(0),0,1), 0.5, 1e-2, 1000);//normal( rng(0), 0, vthi);
-     uz_alpha = normal( rng(0), 0, vtha)-JZ_PERT_1*0.5-JZ_PERT_2*0.5;//inverse_cdf(uniform(rng(0),0,1), 0.5, 1e-2, 1000);//normal( rng(0), 0, vthi);
+     
+     ux_alpha = normal( rng(0), 0, vtha)-Vd+VX_PERT;//inverse_cdf(uniform(rng(0),0,1), 0.5, 1e-2, 1000)-Vd;//normal( rng(0), 0, vthi)-Vd;
+     uy_alpha = normal( rng(0), 0, vtha)+VY_PERT;//inverse_cdf(uniform(rng(0),0,1), 0.5, 1e-2, 1000);//normal( rng(0), 0, vthi);
+     uz_alpha = normal( rng(0), 0, vtha);//inverse_cdf(uniform(rng(0),0,1), 0.5, 1e-2, 1000);//normal( rng(0), 0, vthi);
      /*
      x_pui = uniform(rng(0),xmin,xmax);
      y_pui = uniform(rng(0),ymin,ymax);
@@ -769,7 +733,7 @@ sim_log( "Loading fields" );
    repeat ( Npui/nproc() ) {
 
      // double x_swi, y_swi, z_swi, ux_swi, uy_swi, uz_swi, d0 ;
-     double x_pui, y_pui, z_pui, ux_pui, uy_pui, uz_pui,V,Vc;
+     double x_pui, y_pui, z_pui, ux_pui, uy_pui, uz_pui,V;
      double theta_pui, phi_pui;
     
      //x_swi = uniform(rng(0),xmin,xmax);
@@ -783,17 +747,17 @@ sim_log( "Loading fields" );
      x_pui = uniform(rng(0),xmin,xmax);
      y_pui = uniform(rng(0),ymin,ymax);
      z_pui = uniform(rng(0),zmin,zmax);
-     
      double x = x_pui;
      double y = y_pui;
      double z = z_pui;
-     Vc = 10.07; //PUI cutoff speed
+     
+     //Vc = 10.07; //PUI cutoff speed
      theta_pui = acos(uniform(rng(0),-1,1));
      phi_pui = uniform(rng(0),0,2*M_PI);
      V = Vc*inverse_cdf(uniform(rng(0),0,1), 1e-3);
-     ux_pui = V*sin(theta_pui)*cos(phi_pui)-Vd+UX_PERT_1-JX_PERT_2;
-     uy_pui = V*sin(theta_pui)*sin(phi_pui)-JY_PERT_1*0.5+UY_PERT_2;
-     uz_pui = V*cos(theta_pui)-JZ_PERT_1*0.5-JZ_PERT_2*0.5;
+     ux_pui = V*cos(theta_pui)-Vd+VX_PERT;
+     uy_pui = V*sin(theta_pui)*sin(phi_pui)+VY_PERT;
+     uz_pui = V*sin(theta_pui)*cos(phi_pui);
 
      //inject_particle( ion, x_swi, y_swi, z_swi, ux_swi, uy_swi, uz_swi, qi, 0, 0);
      inject_particle( pui, x_pui, y_pui, z_pui, ux_pui, uy_pui, uz_pui, qi, 0, 0);
@@ -1584,42 +1548,8 @@ begin_particle_injection {
   const double hx=grid->dx;
   const double hy=grid->dy;
   const double hz=grid->dz;
-  double b0 = global->b0;
-  double Lx    = 256;    // size of box in x dimension
-  double Ly    = 1.0;    // size of box in y dimension
-  double Lz    = 64;     // size of box in z dimension
-  double kx0 = 2.0*M_PI/Lx;
-double ky0 = 2.0*M_PI/Ly;
-double kz0 = 2.0*M_PI/Lz;
-double amp = 0.36; //0.18; // amplitude of injected wave relative to Bo
-double imf = 0.71; // the ratio of amplitudes of the two groups of waves propagating to the opposite direction
-double v_A = global->v_A;
- #define DBX_1(l,m,phi) amp*b0*cos(l*kz0*z + m*ky0*y + phi)
- #define DEY_1(l,m,phi) -amp*(l/abs(l))*v_A*b0*cos(l*kz0*z + m*ky0*y + phi)
-// These give velocity & current consistent with Alfven wave
- #define DUX_1(l,m,phi) -amp*(l/abs(l))*v_A*cos(l*kz0*z + m*ky0*y + phi)
- #define DJY_1(l,m,phi) -amp*b0*(l*kz0)*sin(l*kz0*z + m*ky0*y + phi)
- #define DJZ_1(l,m,phi) amp*b0*(m*ky0)*sin(l*kz0*z + m*ky0*y + phi)
-// Single wave propating to the right
- #define BX_PERT_1 DBX_1(1,1,0) + DBX_1(1,2,1.5) + DBX_1(-2,3,3.9)   
- #define EY_PERT_1 DEY_1(1,1,0) + DEY_1(1,2,1.5) + DEY_1(-2,3,3.9)  
- #define UX_PERT_1 DUX_1(1,1,0) + DUX_1(1,2,1.5) + DUX_1(-2,3,3.9)
- #define JY_PERT_1 DJY_1(1,1,0) + DJY_1(1,2,1.5) + DJY_1(-2,3,3.9)
- #define JZ_PERT_1 DJZ_1(1,1,0) + DJZ_1(1,2,1.5) + DJZ_1(-2,3,3.9)
+  
 
-//  Alfvenic perturbation with deltaB in the y direction
-//  works only for a pair plasma
- #define DBY_2(l,m,phi) amp*imf*b0*cos(l*kz0*z + m*kx0*x + phi)
- #define DEX_2(l,m,phi) amp*imf*(l/abs(l))*v_A*b0*cos(l*kz0*z + m*kx0*x + phi)
-// These give velocity & current consistent with Alfven wave
- #define DUY_2(l,m,phi) -amp*imf*(l/abs(l))*v_A*cos(l*kz0*z + m*kx0*x + phi)
- #define DJX_2(l,m,phi) amp*b0*imf*(l*kz0)*sin(l*kz0*z + m*kx0*x + phi)
- #define DJZ_2(l,m,phi) -amp*b0*imf*(m*kx0)*sin(l*kz0*z + m*kx0*x + phi)
-// Single wave propating to the left
- #define BY_PERT_2 DBY_2(-1,1,0.4) + DBY_2(-1,-2,2.56) + DBY_2(2,-3,4.19)   
- #define UY_PERT_2 DUY_2(-1,1,0.4) + DUY_2(-1,-2,2.56) + DUY_2(2,-3,4.19)
- #define JX_PERT_2 DJX_2(-1,1,0.4) + DJX_2(-1,-2,2.56) + DJX_2(2,-3,4.19)
- #define JZ_PERT_2 DJZ_2(-1,1,0.4) + DJZ_2(-1,-2,2.56) + DJZ_2(2,-3,4.19)
   // Initialize the injectors on the first call
 
     static int initted=0;
@@ -1635,8 +1565,11 @@ double v_A = global->v_A;
             if (global->right) {
 	      if (rank() == 0) MESSAGE(("----------------Initializing the Right Particle Injectors-----------------")); 
 	DEFINE_INJECTOR(right,ny,nz);
+  
 	if (step() == 0) { 
+    
 	  for ( int n=1; n<=nsp; n++ ) { 
+      n_inject(n)=0;
 	    for ( int k=1;k<=nz; k++ ) {
 	      for ( int j=1;j<=ny; j++ ) { 
 		bright(n,k,j) = 0;
@@ -1673,27 +1606,56 @@ double v_A = global->v_A;
   int i_particle  = global->i_particle;   // ion particle index
   int alpha_particle  = global->alpha_particle;   // alpha particle index
   int pui_particle  = global->pui_particle;   // pui particle index
-          double pui_flux = PUI_flux_to_right(33.5,1.4,5,global->ur,10.07);
+  int PUI_inject_number = 0;
+  //double pui_flux = PUI_flux_to_right(33.5,1.4,5,global->ur,10.07);
+  //const double denominator = integral_flux(global->ur, 0.01, 0.01);
+  //std::cout<<denominator/speed_cdf(1,33.5,1.4,5)/pow(10.07,3)<<" "<<pui_flux<<"\n";
+  // std::cout<<speed_cdf(1)<<" "<<global->PUI_flux<<"\n";
+  
       for ( int n=1; n<=nsp; n++ ) { 
 	species_t * species = find_species_id(n-1,species_list );  
   //std::cout<<species->np<<"\n";
   species_t *tracer = find_species_id(n+2, global->tracers_list);
+
   //std::cout<<n<<" "<<tracer->name<<"\n";
 	for ( int k=1;k<=nz; k++ ) {
+    //std::cout<<k<<"**********"<<"\n";
 	  for ( int j=1;j<=ny; j++ ) {
 	    vtherm = sqrt(2.0*pright(1,1,n,k,j)/nright(n,k,j));
       //std::cout <<"n="<<n<<", vth="<<vtherm <<"\n";
 	    vd =  (global->ur)/vtherm;
       if (n!=nsp){
 	      bright(n,k,j) = bright(n,k,j)+ dt*nright(n,k,j)*vtherm*(exp(-vd*vd)/sqpi+vd*(erf(vd)+1))/(2*hx);
+        n_inject(n) += dt*nright(n,k,j)*vtherm*(exp(-vd*vd)/sqpi+vd*(erf(vd)+1))/(2*hx);
+        
+
+       
       }
       else{
-        bright(n,k,j) = bright(n,k,j)+ dt*nright(n,k,j)*pui_flux/hx+dt*nright(n,k,j)*(global->ur)/hx;//escape PUIs plus inject PUI flow
+        bright(n,k,j) = bright(n,k,j)+dt*nright(n,k,j)*global->PUI_flux_normalized/hx;//escape PUIs plus inject PUI flow
+        n_inject(n) += dt*nright(n,k,j)*global->PUI_flux_normalized/hx;
+        
+        //std::cout<<global->PUI_flux_normalized*dt*nright(n,k,j)/hx;
         //bright(n,k,j) = bright(n,k,j)+ dt*nright(n,k,j)*(global->ur)/hx;//inject PUI flow
+        //std::cout<<dt*nright(n,k,j)*pui_flux/hx+dt*nright(n,k,j)*(global->ur)/hx<<" "<<denominator*nright(n,k,j)*dt/hx<<"\n";
       }
 	    inject = (long) bright(n,k,j);
-      //std::cout << inject <<"\n";
 	    bright(n,k,j) = bright(n,k,j) - (double) inject;
+      // inject = (long)n_inject(n);
+      // n_inject(n) = n_inject(n)-(double)inject;
+      if (n==3){
+        PUI_inject_number += inject;
+        //std::cout<<"step="<<step()<<", n_inject="<<n_inject(n) <<", inject="<<inject<<", k="<<k<<"\n";
+      }
+    //   double integer_part = floor(bright(n,k,j));
+    //   double fractional = bright(n,k,j)-integer_part;
+    //   if (uniform(rng(0), 0, 1) < fractional) {
+    //     inject = (long)(integer_part + 1);
+    // } else {
+    //     inject = (long)integer_part;
+    // }
+    // bright(n,k,j) = bright(n,k,j) - inject;
+    // std::cout<<inject<<"\n";
 	    double uflow[3] = {uright(1,n,k,j),uright(2,n,k,j),uright(3,n,k,j)};
 	    double press[9] = {pright(1,1,n,k,j),pright(1,2,n,k,j),pright(1,3,n,k,j),pright(2,1,n,k,j),pright(2,2,n,k,j),pright(2,3,n,k,j),pright(3,1,n,k,j),pright(3,2,n,k,j),pright(3,3,n,k,j)};	     
 
@@ -1710,7 +1672,8 @@ double v_A = global->v_A;
 	      age = 0;
         //std::cout<<inject<<"\n";
         if (n!=nsp){
-	      inject_particle(species, x, y, z, uv[0]+UX_PERT_1-JX_PERT_2, uv[1]-JY_PERT_1*0.5+UY_PERT_2, uv[2]-JZ_PERT_1*0.5-JZ_PERT_2*0.5, abs(q(n)) , age, 0 );
+	      inject_particle(species, x, y, z, uv[0]+VX_PERT_time(0.005*step()), uv[1]+VY_PERT_time(0.005*step()), uv[2], abs(q(n)) , age, 0 );
+        //std::cout<<uv[0]<<"\n";
         /*
         if (n==1){
           i_particle++;
@@ -1741,19 +1704,23 @@ double v_A = global->v_A;
         //end if
         
         else{
-          double ux_pui, uy_pui, uz_pui, V, Vc;
-          double theta_pui, phi_pui;
-          Vc = 10.07;
+          double ux_pui, uy_pui, uz_pui;
+          //double theta_pui, phi_pui;
+          // Vc = 10.07;
          //double x_pui = uniform(rng(0), grid->x1-2*hx, grid->x1);
-          theta_pui = acos(uniform(rng(0),-1,1));
-          phi_pui = uniform(rng(0),0,2*M_PI);
+          // theta_pui = acos(uniform(rng(0),-1,global->ur/Vc));
+          // phi_pui = uniform(rng(0),0,2*M_PI);
 
-          V = Vc*inverse_cdf(uniform(rng(0),0,1), 1e-3);
-          ux_pui = V*sin(theta_pui)*cos(phi_pui)-global->ur+UX_PERT_1-JX_PERT_2;
-          uy_pui = V*sin(theta_pui)*sin(phi_pui)-JY_PERT_1*0.5+UY_PERT_2;
-          uz_pui = V*cos(theta_pui)-JZ_PERT_1*0.5-JZ_PERT_2*0.5;
-        
-          inject_particle(species, x, y, z, ux_pui, uy_pui, uz_pui, abs(q(n)) , age, 0 );
+          //V = Vc*inverse_cdf(uniform(rng(0),0,1), 1e-3);
+          
+          std::vector<double> random_velocity = rejection_sampling_cylindrical(global->ur, 3*global->M, global->PUI_flux);
+          //std::vector<double> random_velocity_2 = rejection_sampling_cylindrical(global->ur, global->M, global->PUI_flux);
+          ux_pui = -random_velocity[0];//-inverse_F(uniform(rng(0),0,1),global->ur,1e-1,1e-1);//V*sin(theta_pui)*cos(phi_pui)-global->ur;
+          uy_pui = random_velocity[1];
+          uz_pui = random_velocity[2];
+          //std::cout<<random_velocity[0]<<" "<<random_velocity_2[0]<<"\n";
+          //std::cout<<VX_PERT<<"\n";
+          inject_particle(species, x, y, z, ux_pui+VX_PERT_time(0.005*step()), uy_pui+VY_PERT_time(0.005*step()), uz_pui, abs(q(n)) , age, 0 );
              
           pui_particle++;
             /*
@@ -1784,6 +1751,9 @@ double v_A = global->v_A;
 	  }
     
 	}
+  // if (n==3){
+  //   std::cout<<"step="<<step()<<", inject="<<PUI_inject_number<<"\n";
+  // }
       }
     } // end right injector
 if ( global->particle_tracing > 0 ) advance_tracers(1);//advance the tracer particles
@@ -1816,8 +1786,8 @@ begin_field_injection {
     //XYZ_LOOP(nx-5,nx,0,ny+1,0,nz+1) field(x,y,z).ex  = 0;
     //XYZ_LOOP(nx-5,nx,0,ny+1,0,nz+1) field(x,y,z).ey  = -Vflow*b0*sn;
     //XYZ_LOOP(nx-5,nx,0,ny+1,0,nz+1) field(x,y,z).ez  = 0;
-    XYZ_LOOP(nx-1,nx,0,ny+1,0,nz+1)field(x,y,z).cbx = (1.0-r)*field(x,y,z).cbx + r*b0*sqrt(1-sn*sn);
-    XYZ_LOOP(nx-1,nx,0,ny+1,0,nz+1) field(x,y,z).cby = (1.0-r)*field(x,y,z).cby;
+    XYZ_LOOP(nx-1,nx,0,ny+1,0,nz+1)field(x,y,z).cbx = (1.0-r)*field(x,y,z).cbx + r*(b0*sqrt(1-sn*sn)+BX_PERT_time(0.005*step()));
+    XYZ_LOOP(nx-1,nx,0,ny+1,0,nz+1) field(x,y,z).cby = (1.0-r)*field(x,y,z).cby + r*BY_PERT_time(0.005*step());
     XYZ_LOOP(nx-1,nx,0,ny+1,0,nz+1)field(x,y,z).cbz = (1.0-r)*field(x,y,z).cbz + r*b0*sn;
   }
 #else
@@ -1829,4 +1799,6 @@ begin_field_injection {
 //*******************  COLLISIONS ***************************
 begin_particle_collisions {
 } // end collisions
+
+
 

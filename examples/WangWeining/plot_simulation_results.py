@@ -18,7 +18,7 @@ import errno
 import math
 import os
 import scipy.io as sio
-from scipy.optimize import leastsq
+from scipy.optimize import curve_fit
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -28,6 +28,7 @@ import scipy.stats as scs
 from read_field_data import loadinfo, load_data_at_certain_t
 from scipy.integrate import nquad
 import pandas as pd
+from scipy.fft import fftn, fftfreq, fft
 
 #plt.style.use("seaborn-deep")
 # mpl.rc('text', usetex=True)
@@ -448,6 +449,18 @@ def f_pui(vx, vy, vz, v_drift):
     return result
 
 
+def counts_pui_E(E, A, vc, alpha, eta):
+    # vc = 10.07
+    # alpha = 1.4
+    lambda_pui = 3.4
+    r = 33.5
+    v = np.sqrt(E)
+    result = 4 * A * np.pi * v * np.where(v < vc,
+                                      (v / vc) ** (alpha - 3) * np.exp(-lambda_pui / r * (v / vc) ** (-alpha)),
+                                      np.exp(-v/eta) * np.exp(vc/eta-lambda_pui/r))
+    return result
+
+
 def g_pui(vx, vy, vz, v_drift):
     v = np.sqrt((vx + v_drift)**2 + vy**2 + vz**2)
     vc = 10.07
@@ -693,6 +706,49 @@ def g_pui_1d(direction, v, v_drift=0, integration_range=20, singularity_threshol
     return result
 
 
+def get_shock_position(field_dir, epoch, bz_threshold, nx, nz):
+    bz_t = load_data_at_certain_t(f"{field_dir}/bz.gda", epoch, nx, nz)
+    index_dn = np.where(np.mean(bz_t, axis=1) > bz_threshold)[0]
+    index_shock = np.max(index_dn)
+    return index_shock
+
+
+def plot_power_spectra_at_different_positions(*i_xs, field_dir, epoch, nx, nz):
+    kz_min = 2 * np.pi / nz
+    kz_max = 2 * np.pi / 1
+    bx_0 = load_data_at_certain_t(f"{field_dir}/bx.gda", 0, nx, nz)
+    by_0 = load_data_at_certain_t(f"{field_dir}/by.gda", 0, nx, nz)
+    bz_0 = load_data_at_certain_t(f"{field_dir}/bz.gda", 0, nx, nz)
+    kz = fftfreq(bx_0.shape[1], d=0.75) * 2 * np.pi
+    # kz = np.logspace(np.log10(0.01), np.log10(kz_max), nz)
+    bx_k0 = fft(bx_0[20, :])
+    Pk_0 = np.abs(bx_k0) ** 2
+    Pk_integral_0 = np.sum(Pk_0) * (kz[1] - kz[0])
+    for i_x in i_xs:
+        bx_t = load_data_at_certain_t(f"{field_dir}/bx.gda", epoch, nx, nz)
+        # kz_t = fftfreq(bx.shape[1], d=1) * 2 * np.pi
+        # kz = np.logspace(np.log10(0.01), np.log10(kz_max), nz)
+        bx_k = fft(bx_t[i_x, :])
+        Pk = np.abs(bx_k) ** 2
+        k_bins = np.linspace(kz_min, kz_max, 15)
+        Pk_avg, edges = np.histogram(np.abs(kz), bins=k_bins, weights=Pk)
+        plt.plot(edges[:-1], Pk_avg / Pk_integral_0, label=f"Epoch={epoch},x={i_x}")
+    plt.plot(edges, edges**(-5/3)/(kz_min**(-2/3)-kz_max**(-2/3))/1.5, label=r"theoretical spectrum($k^{-\frac{5}{3}}$)")
+    plt.yscale('log')
+    plt.xscale('log')
+    plt.ylim([1e-3, 20])
+    plt.legend(fontsize=15)
+    plt.ylabel("PSD", fontsize=15)
+    plt.xlabel("k", fontsize=15)
+    # plt.title("PSD at different regions", fontsize=15)
+    plt.title("Initial PSD", fontsize=15)
+    plt.show()
+
+
+
+
+
+
 class Species:
     def __init__(self, name, fullname, filename, num_files):
         """
@@ -884,6 +940,7 @@ class Species:
         plt.show()
 
 
+
 # 使用示例
 if __name__ == "__main__":
     mq = 1.6726e-27
@@ -899,7 +956,7 @@ if __name__ == "__main__":
     field_dir = f"data_ip_shock/field_data_{run_case_index}/"
     base_fname_swi_1 = f"data_ip_shock/particle_data_{run_case_index}/T.{step}/Hparticle_{species_lst[species_index]}.{step}.{{}}"
     base_fname_swi_2 = f"data_ip_shock/particle_data_13/T.10000/Hparticle_{species_lst[species_index]}.{step}.{{}}"
-    base_fname_swi_3 = f"data_ip_shock/particle_data_12/T.10000/Hparticle_{species_lst[species_index]}.{step}.{{}}"
+    base_fname_swi_3 = f"data_ip_shock/particle_data_16/T.10000/Hparticle_{species_lst[species_index]}.{step}.{{}}"
 
     p_1 = Species(name=species_lst[species_index], fullname=fullname_lst[species_index],
                   filename=base_fname_swi_1, num_files=num_files)
@@ -907,8 +964,76 @@ if __name__ == "__main__":
                     filename=base_fname_swi_2, num_files=num_files)
     p_3 = Species(name=species_lst[species_index], fullname=fullname_lst[species_index],
                     filename=base_fname_swi_3, num_files=num_files)
-    Species.plot_velocity_distribution(p_1, p_3, p_2, x_ranges=[(50, 60), (50, 60), (50, 60)],
-                                       sigmas=[0, 1, 2])
+     #%%
+    # p_3.plot_phase_space_2D(sample_step=1, x_plot_name="x", y_plot_name="ux", color="k", size=1)
+    # Species.plot_velocity_distribution(p_1, p_3, p_2, x_ranges=[(50, 60), (50, 60), (50, 60)],
+    #                                    sigmas=[0, 1, 2])
+
+    # FIT THE ENERGY SPECTRUM OF PUIs
+    # x_range = [50, 60]
+    # index = np.where((p_2.x >= x_range[0]) & (p_2.x < x_range[1]))
+    # bin_min = 0  # np.min(species.uy[index])
+    # bin_max = 600  # np.max(species.uy[index])
+    # counts, bins = np.histogram(p_2.E[index], bins=np.linspace(bin_min, bin_max, 30))
+    # bin_center = 0.5*(bins[:-1]+bins[1:])
+    # p0 = [100, 20, 1.5, 2]
+    # p, _ = curve_fit(counts_pui_E, bin_center, counts, p0=p0)
+    # A_fit, vc_fit, alpha_fit, eta_fit = p
+    # plt.plot(bin_center, counts, label="simulated")
+    # plt.plot(bin_center, counts_pui_E(bin_center, A_fit, vc_fit+1.5, alpha_fit, eta_fit-0.55), label="fitted")
+    # plt.yscale("log")
+    # plt.xscale("log")
+    # plt.legend()
+    # plt.show()
+
+    # EVALUATE THE POWER SPECTRUM OF TURBULENCE
+    field_dir = "data_ip_shock/field_data_19"
+    print(get_shock_position(field_dir=field_dir, epoch=50, bz_threshold=1.5, nx=256, nz=64))
+    plot_power_spectra_at_different_positions(50, field_dir=field_dir, epoch=0, nx=256, nz=64)
+
+    # it = 50# p_2.it
+    # nx = p_2.nx
+    # nz = p_2.nz
+    # kz_min = 2 * np.pi / nz
+    # kz_max = 2 * np.pi / 1
+    # bx = load_data_at_certain_t("data_ip_shock/field_data_19/bx.gda", it, nx, nz)
+    # by = load_data_at_certain_t("data_ip_shock/field_data_19/by.gda", it, nx, nz)
+    epoch = 60
+    bz = load_data_at_certain_t("data_ip_shock/field_data_19/bz.gda", epoch, 256, 64)
+    bx = load_data_at_certain_t("data_ip_shock/field_data_19/bx.gda", epoch, 256, 64)
+    var_arr = np.var(bx, axis=1)
+    plt.plot(var_arr, label="variation of Bx")
+    plt.plot(np.mean(bz, axis=1), label="Bz")
+    plt.axvline(get_shock_position(field_dir=field_dir, epoch=epoch, bz_threshold=1.5, nx=256, nz=64),
+                c="k", linestyle="--", label="shock front")
+    # plt.ylabel("variation of Bx", fontsize=15)
+    plt.xlabel("x", fontsize=16)
+    plt.title(f"t={epoch}")
+    plt.legend()
+    plt.show()
+    # # print(np.mean(bz, axis=1))
+    # b_turb = np.sqrt(bx**2+by**2)
+    # print(np.var(bx[10, :]))
+    # kz = fftfreq(bx.shape[1], d=1) * 2 * np.pi
+    # # kz = np.logspace(np.log10(0.01), np.log10(kz_max), nz)
+    # bx_k = fft(by[120, :])
+    #
+    # Pk = np.abs(bx_k) ** 2
+    # Pk_integral = np.sum(Pk)*(kz[1]-kz[0])
+    # # Pk_1d = np.mean(Pk, axis=0)
+    # k_bins = np.linspace(kz_min, kz_max, 15)
+    # Pk_avg, edges = np.histogram(np.abs(kz), bins=k_bins, weights=Pk)
+    # plt.plot(edges[:-1], Pk_avg/Pk_integral)
+    # print(np.sum(Pk_avg))
+    # plt.plot(edges, edges**(-5/3)/(kz_min**(-2/3)-kz_max**(-2/3))/1.5)
+    # plt.xscale("log")
+    # plt.yscale("log")
+    # plt.ylim([0.05, 5000])
+    # plt.show()
+    # fig, ax =plt.subplots(1, 1, figsize=(6, 6))
+    # ax.plot(np.mean(bz, axis=1))
+    # plt.show()
+
     # swi_2.plot_phase_space_2D(sample_step=10, x_plot_name="x", y_plot_name="uz", color="k", size=1)
     # counts_swi_up, counts_swi_dn, bins = swi.get_counts_in_SWAP_view(energy_bin=energy_bin, up_region_start=230, up_region_end=240
     #                            , dn_region_start=20, dn_region_end=30, v_spacesraft=11-14/va)
