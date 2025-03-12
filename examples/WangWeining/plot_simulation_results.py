@@ -1,3 +1,4 @@
+#%%
 """
 Particle phase space diagram
 
@@ -21,6 +22,7 @@ import scipy.io as sio
 from scipy.optimize import curve_fit
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
 import scipy.io as sio
@@ -29,7 +31,7 @@ from read_field_data import loadinfo, load_data_at_certain_t
 from scipy.integrate import nquad
 import pandas as pd
 from scipy.fft import fftn, fftfreq, fft
-
+from tracking_data_read import Tracer
 #plt.style.use("seaborn-deep")
 # mpl.rc('text', usetex=True)
 mpl.rcParams["text.latex.preamble"] = \
@@ -707,19 +709,25 @@ def g_pui_1d(direction, v, v_drift=0, integration_range=20, singularity_threshol
 
 
 def get_shock_position(field_dir, epoch, bz_threshold, nx, nz):
-    bz_t = load_data_at_certain_t(f"{field_dir}/bz.gda", epoch, nx, nz)
-    index_dn = np.where(np.mean(bz_t, axis=1) > bz_threshold)[0]
+    bz_t = load_data_at_certain_t(f"{field_dir}"+"bz.gda", epoch, nx, nz)
+    if epoch < 10:
+        bz_threshold_t = 0.8*np.max(np.mean(bz_t, axis=1))+0.2
+    else:
+        bz_threshold_t = bz_threshold
+    index_dn = np.where(np.mean(bz_t, axis=1) > bz_threshold_t)[0]
     index_shock = np.max(index_dn)
+    if epoch == 0:
+        return 0
     return index_shock
 
 
-def plot_power_spectra_at_different_positions(*i_xs, field_dir, epoch, nx, nz):
+def plot_power_spectra_at_different_positions(*i_xs, field_dir, epoch, nx, nz, lambda_min):
     kz_min = 2 * np.pi / nz
-    kz_max = 2 * np.pi / 1
+    kz_max = 2 * np.pi / lambda_min
     bx_0 = load_data_at_certain_t(f"{field_dir}/bx.gda", 0, nx, nz)
     by_0 = load_data_at_certain_t(f"{field_dir}/by.gda", 0, nx, nz)
     bz_0 = load_data_at_certain_t(f"{field_dir}/bz.gda", 0, nx, nz)
-    kz = fftfreq(bx_0.shape[1], d=0.75) * 2 * np.pi
+    kz = fftfreq(bx_0.shape[1], d=2.5) * 2 * np.pi
     # kz = np.logspace(np.log10(0.01), np.log10(kz_max), nz)
     bx_k0 = fft(bx_0[20, :])
     Pk_0 = np.abs(bx_k0) ** 2
@@ -733,11 +741,12 @@ def plot_power_spectra_at_different_positions(*i_xs, field_dir, epoch, nx, nz):
         k_bins = np.linspace(kz_min, kz_max, 15)
         Pk_avg, edges = np.histogram(np.abs(kz), bins=k_bins, weights=Pk)
         plt.plot(edges[:-1], Pk_avg / Pk_integral_0, label=f"Epoch={epoch},x={i_x}")
-    plt.plot(edges, edges**(-5/3)/(kz_min**(-2/3)-kz_max**(-2/3))/1.5, label=r"theoretical spectrum($k^{-\frac{5}{3}}$)")
+    plt.plot(edges, edges**(-5/3)/(kz_min**(-2/3)-kz_max**(-2/3))/1.5,
+             label=r"theoretical spectrum($k^{-\frac{5}{3}}$)", c="r")
     plt.yscale('log')
     plt.xscale('log')
-    plt.ylim([1e-3, 20])
-    plt.legend(fontsize=15)
+    # plt.ylim([1e-3, 20])
+    plt.legend(fontsize=14)
     plt.ylabel("PSD", fontsize=15)
     plt.xlabel("k", fontsize=15)
     # plt.title("PSD at different regions", fontsize=15)
@@ -791,8 +800,8 @@ class Species:
                     self.nt = v0.nt
                     self.it = round(v0.dt * v0.nt)
                     self.nx = v0.nx * topo_x
-                    self.ny = v0.nx * topo_y
-                    self.nz = v0.nx * topo_z
+                    self.ny = v0.ny * topo_y
+                    self.nz = v0.nz * topo_z
                 ux = ptl['u'][:, 0]
                 uy = ptl['u'][:, 1]
                 uz = ptl['u'][:, 2]
@@ -831,7 +840,7 @@ class Species:
             self.ux = ux_total
             self.uy = uy_total
             self.uz = uz_total
-            self.E = ux_total**2+uy_total**2+uz_total**2
+            self.E = 0.5*(ux_total**2+uy_total**2+uz_total**2)
         except FileNotFoundError:
             print(f"文件 {self.filename} 未找到。")
         except Exception as e:
@@ -899,7 +908,7 @@ class Species:
         for i in range(256):
             index_tmp = np.where((self.x >= i) & (self.x < i+1))
             # temperature[i] = np.var(self.ux[index_tmp])+np.var(self.uy[index_tmp])+np.var(self.uz[index_tmp])
-            temperature[i] = np.var(self.uy[index_tmp])
+            temperature[i] = np.var(self.ux[index_tmp])
         plt.plot(range(256), temperature)
         plt.show()
 
@@ -939,6 +948,38 @@ class Species:
         plt.legend()
         plt.show()
 
+    def plot_energy_distribution_map(self):
+        counts_mat = np.zeros((self.nx, 19))
+        for i in range(self.nx):
+            condition = (self.x >= i) & (self.x < i+1)
+            counts, bins = np.histogram(self.E[condition], bins=np.logspace(np.log10(1), np.log10(250), 20))
+            counts_mat[i, :] = counts
+        bins_center = 0.5*(bins[:-1]+bins[1:])
+        plt.pcolormesh(np.linspace(0, self.nx-1, self.nx), bins_center, counts_mat.T,
+                       cmap="jet", norm=mpl.colors.LogNorm())
+        plt.yscale("log")
+        plt.xlabel("x")
+        plt.ylabel("E")
+        cbar = plt.colorbar()
+        cbar.set_label("conuts")
+        # plt.xlim([50, 150])
+        plt.show()
+
+    def plot_counts_dis_map(self):
+        counts_mat, xedges, zedges = np.histogram2d(self.x, self.z, bins=[self.nx, self.nz],
+                                                    range=[[0, self.nx], [-self.nz/2, self.nz/2]])
+        plt.pcolormesh(xedges[:-1], zedges[:-1], counts_mat.T, cmap="jet")
+        plt.xlabel("x")
+        plt.ylabel("z")
+        plt.colorbar()
+
+        plt.show()
+
+
+
+
+
+
 
 
 # 使用示例
@@ -948,15 +989,15 @@ if __name__ == "__main__":
     energy_charge_bin = sio.loadmat("Energy charge bin.mat")["energy_charge_bin"]
     energy_bin = np.squeeze((np.sqrt(2 * energy_charge_bin * 1.6e-19 / mq) / 1e3 / va) ** 2)
     step = 10000
-    run_case_index = 7
+    run_case_index = 27
     num_files = 16
     species_lst = ["SWI", "alpha", "PUI"]
     fullname_lst = ["SW proton", " SW alpha", "PUI(H+)"]
     species_index = 2
     field_dir = f"data_ip_shock/field_data_{run_case_index}/"
     base_fname_swi_1 = f"data_ip_shock/particle_data_{run_case_index}/T.{step}/Hparticle_{species_lst[species_index]}.{step}.{{}}"
-    base_fname_swi_2 = f"data_ip_shock/particle_data_13/T.10000/Hparticle_{species_lst[species_index]}.{step}.{{}}"
-    base_fname_swi_3 = f"data_ip_shock/particle_data_16/T.10000/Hparticle_{species_lst[species_index]}.{step}.{{}}"
+    base_fname_swi_2 = f"data_ip_shock/particle_data_28/T.10000/Hparticle_{species_lst[species_index]}.{step}.{{}}"
+    base_fname_swi_3 = f"data_ip_shock/particle_data_26/T.10000/Hparticle_{species_lst[species_index]}.{step}.{{}}"
 
     p_1 = Species(name=species_lst[species_index], fullname=fullname_lst[species_index],
                   filename=base_fname_swi_1, num_files=num_files)
@@ -965,7 +1006,137 @@ if __name__ == "__main__":
     p_3 = Species(name=species_lst[species_index], fullname=fullname_lst[species_index],
                     filename=base_fname_swi_3, num_files=num_files)
      #%%
-    # p_3.plot_phase_space_2D(sample_step=1, x_plot_name="x", y_plot_name="ux", color="k", size=1)
+    # p_1.plot_phase_space_2D(sample_step=1, x_plot_name="x", y_plot_name="uz", color="k", size=1)
+    # p_2.plot_temperature_variation("abc")
+    p_1.plot_energy_distribution_map()
+
+    # plt.show()
+    #%%
+    """
+    READ TRACER DATA
+    """
+    num_particle_traj = 2000
+    ratio_emax = 1
+    species_name_lst = ["ion", "alpha", "pui"]
+    species_fullname_lst = ["SWI(proton)", "SWI(alpha)", "PUI"]
+    sample_lst = [2, 3, 2]
+    ntraj_lst = [8000, 12000, 32000]
+    fdir = f"D:/Research/Codes/Hybrid-vpic/data_ip_shock/trace_data/"
+    # 用于存储文件名的字典
+    file_names = {}
+    # 用于存储 Tracer 对象的字典
+    tracers = {}
+
+    # 遍历 index 列表
+    for index in [7, 28]:
+        # 遍历物种名称列表
+        for j in range(len(species_name_lst)):
+            # 生成文件名
+            fname_key = f"fname{index}_{species_name_lst[j]}"
+            file_names[
+                fname_key] = f"{species_name_lst[j]}_trace_data/{species_name_lst[j]}s_ntraj{ntraj_lst[j]}_{ratio_emax}emax_{index}.h5p"
+            # 生成 Tracer 对象
+            tracer_key = f"{species_name_lst[j]}_tracer_{index}"
+            tracers[tracer_key] = Tracer(
+                species_name_lst[j],
+                species_fullname_lst[j],
+                fdir,
+                file_names[fname_key],
+                sample_step=sample_lst[j]
+            )
+    #%%
+    """
+    CALCULATE ACCELERATION IN DIFFERENT REGIONS
+    """
+    dt = 0.25
+    tracer = tracers["pui_tracer_7"]
+    delta_E = tracer.data["E"][:, 400] - tracer.data["E"][:, 0]
+    delta_E = tracer.data["E"][:, 0]
+    shock_position_fit = tracer.x_shock_arr_fit()
+    # Tracer.plot_energy_variation_ShockFrame(tracer, iptl_list=[1300])
+    nptl = tracer.data["nptl"]
+    delta_E_bin = [10, 20, 30, 50, 80, 128, 200]
+    delta_E_bin = np.logspace(0.5, np.log10(60), 15)
+    dx = 3
+    Lx = 150
+    Wy_map = np.zeros((len(delta_E_bin)-1, round(Lx/dx)))
+    Wx_map = np.zeros((len(delta_E_bin) - 1, round(Lx / dx)))
+    Wz_map = np.zeros((len(delta_E_bin) - 1, round(Lx / dx)))
+
+    for i in range(len(delta_E_bin)-1):
+        condition_1 = (delta_E >= delta_E_bin[i]) & (delta_E < delta_E_bin[i + 1])
+        x_tmp = tracer.data["x"][condition_1, :]
+        uy_tmp = tracer.data["uy"][condition_1, :]
+        ey_tmp = tracer.data["ey"][condition_1, :]
+        ux_tmp = tracer.data["ux"][condition_1, :]
+        ex_tmp = tracer.data["ex"][condition_1, :]
+        uz_tmp = tracer.data["uz"][condition_1, :]
+        ez_tmp = tracer.data["ez"][condition_1, :]
+        for j in range(Wy_map.shape[1]-1):
+            # print(1)
+            condition_2 = (x_tmp - shock_position_fit >= -dx*Wy_map.shape[1]/2+j*dx) & (x_tmp - shock_position_fit < -dx*Wy_map.shape[1]/2+(j+1)*dx)
+            Wy_tmp = uy_tmp * ey_tmp* condition_2
+            Wx_tmp = ux_tmp * ex_tmp * condition_2
+            Wz_tmp = uz_tmp * ez_tmp * condition_2
+            # print((tracer.data["uy"][condition_2]).shape)
+            Wy_map[i, j] += np.mean(np.sum(Wy_tmp, axis=1))*dt
+            Wx_map[i, j] += np.mean(np.sum(Wx_tmp, axis=1)) * dt
+            Wz_map[i, j] += np.mean(np.sum(Wz_tmp, axis=1)) * dt
+    #%%
+    """
+    PLOT ACCELERATION IN DIFFERENT REGIONS
+    """
+    fig, axes = plt.subplots(4, 1, figsize=(15, 15))
+    ax = axes[0]
+    pclr = ax.pcolormesh(np.linspace(-Lx/2, Lx/2, round(Lx/dx)), delta_E_bin[:-1], Wx_map, cmap="RdBu_r", vmax=0.5, vmin=-0.5)
+    # plt.colorbar(pclr)
+    ax.set_xlabel("distance from shock front", fontsize=15)
+    ax.set_ylabel(r"$E_{init}$", fontsize=20)
+    # ax.set_title("Wx", fontsize=15)
+    plt.subplots_adjust(hspace=0, right=0.85)
+    ax_ylim = ax.get_ylim()
+    face_color = (1, 1, 1, 0)
+    edge_color = (0, 0, 0, 1)
+    rect_sa = patches.Rectangle((-40, ax_ylim[0]), 25, ax_ylim[1] - ax_ylim[0], facecolor=face_color,
+                                edgecolor=edge_color, linewidth=5, linestyle="--")
+    # ax.add_patch(rect_sa)
+    pos = ax.get_position()
+    cax = fig.add_axes([pos.x1 + 0.01, pos.y0+0.01, 0.02, pos.y1 - pos.y0 - 0.01])
+    # im = ax.imshow(a_smooth[:, 0, 8, :].T, cmap='jet')
+    cbar = plt.colorbar(pclr, cax=cax)
+    cbar.set_label(r"   $\mathrm{W}_x$", fontsize=20, rotation=0)
+    ax = axes[1]
+    pclr = ax.pcolormesh(np.linspace(-Lx / 2, Lx / 2, round(Lx / dx)), delta_E_bin[:-1], Wy_map, cmap="RdBu_r", vmax=3,
+                         vmin=-3)
+    # plt.colorbar(pclr)
+    ax.set_xlabel("distance from shock front", fontsize=15)
+    ax.set_ylabel(r"$E_{init}$", fontsize=20)
+    ax_ylim = ax.get_ylim()
+    rect_sda = patches.Rectangle((0, ax_ylim[0]), 12, ax_ylim[1] - ax_ylim[0], facecolor=face_color,
+                                 edgecolor=edge_color, linewidth=5)
+    ax.add_patch(rect_sda)
+    # ax.set_title("Wy", fontsize=15)
+    # plt.subplots_adjust(hspace=0, right=0.85)
+    pos = ax.get_position()
+    cax = fig.add_axes([pos.x1 + 0.01, pos.y0+0.01, 0.02, pos.y1 - pos.y0 - 0.01])
+    # im = ax.imshow(a_smooth[:, 0, 8, :].T, cmap='jet')
+    cbar = plt.colorbar(pclr, cax=cax)
+    cbar.set_label(r"   $\mathrm{W}_y$", fontsize=20, rotation=0)
+    ax = axes[2]
+    pclr = ax.pcolormesh(np.linspace(-Lx / 2, Lx / 2, round(Lx / dx)), delta_E_bin[:-1], Wz_map, cmap="RdBu_r", vmax=0.2,
+                         vmin=-0.2)
+    # plt.colorbar(pclr)
+    ax.set_xlabel("distance from shock front", fontsize=13)
+    ax.set_ylabel(r"$E_{init}$", fontsize=20)
+    # ax.set_title("Wz", fontsize=15)
+    # plt.subplots_adjust(hspace=0, right=0.85)
+    pos = ax.get_position()
+    cax = fig.add_axes([pos.x1 + 0.01, pos.y0+0.01, 0.02, pos.y1 - pos.y0 - 0.01])
+    # im = ax.imshow(a_smooth[:, 0, 8, :].T, cmap='jet')
+    cbar = plt.colorbar(pclr, cax=cax)
+    cbar.set_label(r"   $\mathrm{W}_z$", fontsize=20, rotation=0)
+
+    #%%
     # Species.plot_velocity_distribution(p_1, p_3, p_2, x_ranges=[(50, 60), (50, 60), (50, 60)],
     #                                    sigmas=[0, 1, 2])
 
@@ -987,9 +1158,9 @@ if __name__ == "__main__":
     # plt.show()
 
     # EVALUATE THE POWER SPECTRUM OF TURBULENCE
-    field_dir = "data_ip_shock/field_data_19"
-    print(get_shock_position(field_dir=field_dir, epoch=50, bz_threshold=1.5, nx=256, nz=64))
-    plot_power_spectra_at_different_positions(50, field_dir=field_dir, epoch=0, nx=256, nz=64)
+
+    # print(get_shock_position(field_dir=field_dir, epoch=50, bz_threshold=1.5, nx=256, nz=64))
+    # plot_power_spectra_at_different_positions(50, field_dir=field_dir, epoch=0, nx=256, nz=64, lambda_min=10)
 
     # it = 50# p_2.it
     # nx = p_2.nx
@@ -998,38 +1169,342 @@ if __name__ == "__main__":
     # kz_max = 2 * np.pi / 1
     # bx = load_data_at_certain_t("data_ip_shock/field_data_19/bx.gda", it, nx, nz)
     # by = load_data_at_certain_t("data_ip_shock/field_data_19/by.gda", it, nx, nz)
-    epoch = 60
-    bz = load_data_at_certain_t("data_ip_shock/field_data_19/bz.gda", epoch, 256, 64)
-    bx = load_data_at_certain_t("data_ip_shock/field_data_19/bx.gda", epoch, 256, 64)
-    var_arr = np.var(bx, axis=1)
-    plt.plot(var_arr, label="variation of Bx")
-    plt.plot(np.mean(bz, axis=1), label="Bz")
-    plt.axvline(get_shock_position(field_dir=field_dir, epoch=epoch, bz_threshold=1.5, nx=256, nz=64),
-                c="k", linestyle="--", label="shock front")
-    # plt.ylabel("variation of Bx", fontsize=15)
-    plt.xlabel("x", fontsize=16)
-    plt.title(f"t={epoch}")
+    # epoch = 45
+    cases = [7]
+    Pk_hi = np.zeros((len(cases), 100))
+    k_min_factor = [10, 1, 5]
+    mean_var = np.zeros(256)
+    mean_bz = np.zeros(256)
+    # fig, ax = plt.subplots(figsize=(15, 5))
+    ax = axes[3]
+    ax2 = ax.twinx()
+    for i in range(len(cases)):
+        case = cases[i]
+        field_dir = f"data_ip_shock/field_data_{case}/"
+        infoarr = loadinfo(field_dir)
+        nx = int(infoarr[0])
+        nz = int(infoarr[2])
+        Pk_hi_arr = np.zeros(nz)
+        for epoch in range(40, 60):
+            bz = load_data_at_certain_t(field_dir + "bz.gda", epoch, nx, nz)
+            by = load_data_at_certain_t(field_dir + "by.gda", epoch, nx, nz)
+            bx = load_data_at_certain_t(field_dir + "bx.gda", epoch, nx, nz)
+            ez = load_data_at_certain_t(field_dir + "ez.gda", epoch, nx, nz)
+            ey = load_data_at_certain_t(field_dir + "ey.gda", epoch, nx, nz)
+            ex = load_data_at_certain_t(field_dir + "ex.gda", epoch, nx, nz)
+            var_arr = np.mean(bx * bx + by * by)
+            var_2 = np.var(bx + by, axis=1)
+
+            # x_plot = 80
+            # kz = fftfreq(bx.shape[1], d=0.5) * 2 * np.pi
+            # # kz = np.logspace(np.log10(0.01), np.log10(kz_max), nz)
+            # bx_k = fft(ex[x_plot, :])
+            #
+            # Pk = np.abs(bx_k) ** 2
+            # Pk_integral = np.sum(Pk) * (kz[1] - kz[0])
+            # # Pk_1d = np.mean(Pk, axis=0)
+            # kz_min = 2 * np.pi / 64
+            # kz_max = 2 * np.pi / 1
+            # k_bins = np.linspace(kz_min, kz_max, 10)
+            # Pk_avg, edges = np.histogram(np.abs(kz), bins=k_bins, weights=Pk)
+            # Pk_hi[i, epoch] = np.sum(Pk_avg[-2:])
+            # plt.figure(figsize=(10, 7))
+            # plt.plot(var_2, label="variation of B")
+            mean_bz += np.mean(bz, axis=1)
+            ax.plot(np.linspace(0, 255, 256) - get_shock_position(field_dir=field_dir, epoch=epoch, bz_threshold=1.6, nx=nx, nz=nz), np.var(bx+by, axis=1), c="r")
+            ax2.plot(np.linspace(0, 255, 256) - get_shock_position(field_dir=field_dir, epoch=epoch, bz_threshold=1.6, nx=nx, nz=nz), np.mean(bz, axis=1), c="b")
+            # plt.plot(
+            #     np.linspace(0, 255, 256) - get_shock_position(field_dir=field_dir, epoch=epoch, bz_threshold=1.6, nx=nx,
+            #                                                   nz=nz), np.mean(ey, axis=1), c="r")
+            # plt.plot(bx[200, :], label="Bx")
+            # plt.plot(by[200, :], label="By")
+            # # plt.plot(bz[200, :], label="Bz")
+            # plt.plot(np.sqrt(bx[200, :]**2+by[200, :]**2), label="B")
+            # plt.xlim([10,20])
+            # a = bx[200, :]
+            # b = by[200, :]
+            # c = bz[200, :]
+            # d = np.sqrt(bx[200, :] ** 2 + by[200, :] ** 2)
+            # print(bx[30, :].mean())
+            # plt.axvline(get_shock_position(field_dir=field_dir, epoch=epoch, bz_threshold=1.5, nx=256, nz=64),
+            #             c="k", linestyle="--", label="shock front")
+            # plt.ylabel("variation of Bx", fontsize=15)
+            # plt.axvline(0, linestyle="--", c="k")
+            plt.xlabel("distance to shock front", fontsize=16)
+
+            plt.xlim([-75, 75])
+            # plt.ylim([-3, 3])
+
+            # plt.title(
+            #     f"t={epoch}, x={x_plot}, x-x_shock={x_plot - get_shock_position(field_dir=field_dir, epoch=epoch, bz_threshold=1.5, nx=nx, nz=nz)}, {kz_min*k_min_factor[i]:.2f}<k<{kz_max:.2f}",
+            #     fontsize=14)
+            # plt.legend()
+            # plt.text(75, 2.5, f"P({k_bins[-3]:.2f}<k<{k_bins[-1]:.2f})=1e{np.log10(np.sum(Pk_avg[-2:])):.3f}",
+            #          fontsize=15)
+            # save_fig_path = f"data_ip_shock/field_data_{cases[i]}/ex_fig"
+            # if not os.path.exists(save_fig_path):
+            #     os.makedirs(save_fig_path)
+            # plt.savefig(save_fig_path + f"/ex_{epoch}.png")
+            # plt.close()
+            print(epoch)
+        # ax2.set_ylim([0.5, 3])
+        # ax.set_ylim([0, 6])
+        ax.set_ylabel(r"$\sigma^2$", fontsize=20, c="r")
+        ax2.set_ylabel(r"$B_z/B_0$", fontsize=20, c="b")
+        ax2.tick_params(axis='y', labelcolor='b')
+        ax.tick_params(axis='y', labelcolor='r')
+        ax_ylim = ax.get_ylim()
+        face_color = (1, 1, 1, 0)
+        edge_color = (0, 0, 0, 1)
+        rect_sda = patches.Rectangle((0, ax_ylim[0]), 12, ax_ylim[1]-ax_ylim[0], facecolor=face_color,
+                                     edgecolor=edge_color, linewidth=5, label="SDA region")
+        rect_sa = patches.Rectangle((-40, ax_ylim[0]), 25, ax_ylim[1] - ax_ylim[0], facecolor=face_color,
+                                    edgecolor=edge_color, linewidth=5, linestyle="--", label="SA region")
+        # ax.text(-5, 4.5, "SDA region", fontsize=16, c="b")
+        ax.add_patch(rect_sda)
+        # ax.add_patch(rect_sa)
+        ax.tick_params(axis='x', labelsize=15, labelcolor='k')
+        ax.set_xlabel(r"distance to shock front [$v_A/\omega_{ci}$]", fontsize=20)
+        handles, labels = ax.get_legend_handles_labels()
+        fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, 0.0), ncol=2, fontsize=26)
+        plt.suptitle("No turbulence", fontsize=25)
+        # plt.tight_layout()
+        # ax2.spines["right"].set_color("b")
+        # plt.plot(np.linspace(-75, 75, 256), mean_bz)
+    plt.show()
+    #%%
+    """
+    PLOT PSD variation
+    """
+    cases = [7]
+    Pk_hi = np.zeros((len(cases), 100))
+    Pk_sum = np.zeros((len(cases), 100))
+    k_min_factor = [10, 1, 5]
+
+    for i in range(len(cases)):
+        case = cases[i]
+        field_dir = f"data_ip_shock/field_data_{case}/"
+        infoarr = loadinfo(field_dir)
+        nx = int(infoarr[0])
+        nz = int(infoarr[2])
+        para_to_perp = np.zeros((nx, 100))
+        b_perp_var = np.zeros((nx, 100))
+        b_para_var = np.zeros((nx, 100))
+        Pk_hi_arr = np.zeros(nz)
+        for epoch in range(1, 100):
+            bz = load_data_at_certain_t(field_dir + "bz.gda", epoch, nx, nz)
+            by = load_data_at_certain_t(field_dir + "by.gda", epoch, nx, nz)
+            bx = load_data_at_certain_t(field_dir + "bx.gda", epoch, nx, nz)
+            ez = load_data_at_certain_t(field_dir + "ez.gda", epoch, nx, nz)
+            ey = load_data_at_certain_t(field_dir + "ey.gda", epoch, nx, nz)
+            ex = load_data_at_certain_t(field_dir + "ex.gda", epoch, nx, nz)
+            var_arr = np.mean(bx * bx + by * by)
+            var_perp = np.var(bx + by, axis=1)
+            var_para = np.var(bz, axis=1)
+            b_para_var[:, epoch] = var_para
+            b_perp_var[:, epoch] = var_perp
+            para_to_perp[:, epoch] = var_para/var_perp
+            x_plot = 80
+            kz = fftfreq(bx.shape[1], d=0.5) * 2 * np.pi
+            # kz = np.logspace(np.log10(0.01), np.log10(kz_max), nz)
+            bz_k = fft(bz[x_plot, :])
+            bx_k = fft(bx[x_plot, :])
+            Pk_z = np.abs(bz_k) ** 2
+            Pk_x = np.abs(bx_k) ** 2
+            Pk_z_integral = np.sum(Pk_z) * (kz[1] - kz[0])
+            # Pk_1d = np.mean(Pk, axis=0)
+            kz_min = 2 * np.pi / 64
+            kz_max = 2 * np.pi / 1
+            k_bins = np.linspace(kz_min, kz_max, 10)
+            Pk_z_avg, edges = np.histogram(np.abs(kz), bins=k_bins, weights=Pk_z)
+            Pk_x_avg, edges = np.histogram(np.abs(kz), bins=k_bins, weights=Pk_x)
+            Pk_hi[i, epoch] = np.sum(Pk_z_avg[-2:])
+            Pk_sum[i, epoch] = np.sum(Pk_z_avg)
+            plt.figure(figsize=(10, 7))
+            plt.plot(edges[:-1], Pk_z_avg, label=r"$\delta B_z$")
+            plt.plot(edges[:-1], Pk_x_avg, label=r"$\delta B_x$")
+            plt.yscale("log")
+            plt.xscale("log")
+            plt.ylim([1e-1, 1e5])
+            plt.title(f"PSD of Bx(t={epoch}, x={x_plot}, x-x_shock={x_plot - get_shock_position(field_dir=field_dir, epoch=epoch, bz_threshold=1.5, nx=nx, nz=nz)})")
+            # plt.plot(var_2, label="variation of B")
+            # plt.plot(bx[x_plot, :])
+            # plt.plot(bx[200, :], label="Bx")
+            # plt.plot(by[200, :], label="By")
+            # # plt.plot(bz[200, :], label="Bz")
+            # plt.plot(np.sqrt(bx[200, :]**2+by[200, :]**2), label="B")
+            # plt.xlim([10,20])
+            # a = bx[200, :]
+            # b = by[200, :]
+            # c = bz[200, :]
+            # d = np.sqrt(bx[200, :] ** 2 + by[200, :] ** 2)
+            # print(bx[30, :].mean())
+            # plt.axvline(get_shock_position(field_dir=field_dir, epoch=epoch, bz_threshold=1.5, nx=256, nz=64),
+            #             c="k", linestyle="--", label="shock front")
+            # plt.ylabel("variation of Bx", fontsize=15)
+            # plt.xlabel("z", fontsize=16)
+            # plt.ylabel("ex", fontsize=16)
+            # plt.ylim([-3, 3])
+
+            # plt.title(
+            #     f"t={epoch}, x={x_plot}, x-x_shock={x_plot - get_shock_position(field_dir=field_dir, epoch=epoch, bz_threshold=1.5, nx=nx, nz=nz)}, {kz_min * k_min_factor[i]:.2f}<k<{kz_max:.2f}",
+            #     fontsize=14)
+            # plt.legend()
+            # plt.text(75, 2.5, f"P({k_bins[-3]:.2f}<k<{k_bins[-1]:.2f})=1e{np.log10(np.sum(Pk_avg[-2:])):.3f}",
+            #          fontsize=15)
+            plt.legend()
+            save_fig_path = f"data_ip_shock/field_data_{cases[i]}/psd_z_fig"
+            if not os.path.exists(save_fig_path):
+                os.makedirs(save_fig_path)
+            plt.savefig(save_fig_path + f"/psd_z_{epoch}.png")
+            plt.close()
+            print(epoch)
+#%%
+    """
+    PLOT 2D magnetic field map
+    """
+    cases = [28]
+    Pk_hi = np.zeros((len(cases), 100))
+    Pk_sum = np.zeros((len(cases), 100))
+    k_min_factor = [10, 1, 5]
+
+    for i in range(len(cases)):
+        case = cases[i]
+        field_dir = f"data_ip_shock/field_data_{case}/"
+        infoarr = loadinfo(field_dir)
+        nx = int(infoarr[0])
+        nz = int(infoarr[2])
+        para_to_perp = np.zeros((nx, 100))
+        b_perp_var = np.zeros((nx, 100))
+        b_para_var = np.zeros((nx, 100))
+        Pk_hi_arr = np.zeros(nz)
+        for epoch in range(1, 100):
+            bz = load_data_at_certain_t(field_dir + "bz.gda", epoch, nx, nz)
+            by = load_data_at_certain_t(field_dir + "by.gda", epoch, nx, nz)
+            bx = load_data_at_certain_t(field_dir + "bx.gda", epoch, nx, nz)
+            ez = load_data_at_certain_t(field_dir + "ez.gda", epoch, nx, nz)
+            ey = load_data_at_certain_t(field_dir + "ey.gda", epoch, nx, nz)
+            ex = load_data_at_certain_t(field_dir + "ex.gda", epoch, nx, nz)
+
+            var_arr = np.mean(bx * bx + by * by)
+            var_perp = np.var(bx + by, axis=1)
+            var_para = np.var(bz, axis=1)
+            b_para_var[:, epoch] = var_para
+            b_perp_var[:, epoch] = var_perp
+            # para_to_perp[:, epoch] = var_para / var_perp
+            # x_plot = 80
+            # kz = fftfreq(bx.shape[1], d=0.5) * 2 * np.pi
+            # # kz = np.logspace(np.log10(0.01), np.log10(kz_max), nz)
+            # bz_k = fft(bz[x_plot, :])
+            # bx_k = fft(bx[x_plot, :])
+            # Pk_z = np.abs(bz_k) ** 2
+            # Pk_x = np.abs(bx_k) ** 2
+            # Pk_z_integral = np.sum(Pk_z) * (kz[1] - kz[0])
+            # # Pk_1d = np.mean(Pk, axis=0)
+            # kz_min = 2 * np.pi / 64
+            # kz_max = 2 * np.pi / 1
+            # k_bins = np.linspace(kz_min, kz_max, 10)
+            # Pk_z_avg, edges = np.histogram(np.abs(kz), bins=k_bins, weights=Pk_z)
+            # Pk_x_avg, edges = np.histogram(np.abs(kz), bins=k_bins, weights=Pk_x)
+            # Pk_hi[i, epoch] = np.sum(Pk_z_avg[-2:])
+            # Pk_sum[i, epoch] = np.sum(Pk_z_avg)
+            plt.figure(figsize=(10, 7))
+            # plt.plot(edges[:-1], Pk_z_avg, label=r"$\delta B_z$")
+            # plt.plot(edges[:-1], Pk_x_avg, label=r"$\delta B_x$")
+            plot_param = "ey"
+            plt.pcolormesh(range(nx), range(nz), ey.T, cmap="jet", vmin=-2, vmax=2)
+            cbar = plt.colorbar()
+            cbar.set_label(f"{plot_param}", fontsize=16)
+            plt.xlabel(r"x [$v_A/\omega_{ci}$]", fontsize=15)
+            plt.ylabel(r"z [$v_A/\omega_{ci}$]", fontsize=15)
+            # plt.yscale("log")
+            # plt.xscale("log")
+            # plt.ylim([1e-1, 1e5])
+            plt.title(f"epoch={epoch}")
+            # plt.plot(var_2, label="variation of B")
+            # plt.plot(bx[x_plot, :])
+            # plt.plot(bx[200, :], label="Bx")
+            # plt.plot(by[200, :], label="By")
+            # # plt.plot(bz[200, :], label="Bz")
+            # plt.plot(np.sqrt(bx[200, :]**2+by[200, :]**2), label="B")
+            # plt.xlim([10,20])
+            # a = bx[200, :]
+            # b = by[200, :]
+            # c = bz[200, :]
+            # d = np.sqrt(bx[200, :] ** 2 + by[200, :] ** 2)
+            # print(bx[30, :].mean())
+            # plt.axvline(get_shock_position(field_dir=field_dir, epoch=epoch, bz_threshold=1.5, nx=256, nz=64),
+            #             c="k", linestyle="--", label="shock front")
+            # plt.ylabel("variation of Bx", fontsize=15)
+            # plt.xlabel("z", fontsize=16)
+            # plt.ylabel("ex", fontsize=16)
+            # plt.ylim([-3, 3])
+
+            # plt.title(
+            #     f"t={epoch}, x={x_plot}, x-x_shock={x_plot - get_shock_position(field_dir=field_dir, epoch=epoch, bz_threshold=1.5, nx=nx, nz=nz)}, {kz_min * k_min_factor[i]:.2f}<k<{kz_max:.2f}",
+            #     fontsize=14)
+            # plt.legend()
+            # plt.text(75, 2.5, f"P({k_bins[-3]:.2f}<k<{k_bins[-1]:.2f})=1e{np.log10(np.sum(Pk_avg[-2:])):.3f}",
+            #          fontsize=15)
+            # plt.legend()
+            save_fig_path = f"data_ip_shock/field_data_{cases[i]}/{plot_param}_map_fig"
+            if not os.path.exists(save_fig_path):
+                os.makedirs(save_fig_path)
+            plt.savefig(save_fig_path + f"/{plot_param}_{epoch}.png")
+            plt.close()
+            print(epoch)
+#%%
+    ex = load_data_at_certain_t(field_dir + "ex.gda", 40, nx, nz)
+    plt.plot(range(nx), ex[:, 30])
+    plt.axvline(get_shock_position(field_dir,40,bz_threshold=1.5, nx=nx, nz=nz), c="k")
+    plt.show()
+    #%%
+    epoch = 70
+    bz = load_data_at_certain_t(field_dir+"bz.gda", i_t=epoch, num_dim1=nx, num_dim2=nz)
+    plt.plot(1/para_to_perp[:, epoch]/10)
+    plt.plot(b_para_var[:, epoch], label="b_para")
+    plt.plot(b_perp_var[:, epoch]/10, label="b_perp")
+    plt.plot(bz)
+    plt.axvline(get_shock_position(field_dir=field_dir, epoch=epoch, bz_threshold=1.5, nx=nx, nz=nz),
+                c="k", linestyle="--")
+    plt.yscale('log')
+    plt.xlim([80, 140])
+    plt.ylim([0, 5])
     plt.legend()
     plt.show()
+#%%
     # # print(np.mean(bz, axis=1))
     # b_turb = np.sqrt(bx**2+by**2)
     # print(np.var(bx[10, :]))
-    # kz = fftfreq(bx.shape[1], d=1) * 2 * np.pi
-    # # kz = np.logspace(np.log10(0.01), np.log10(kz_max), nz)
-    # bx_k = fft(by[120, :])
-    #
-    # Pk = np.abs(bx_k) ** 2
-    # Pk_integral = np.sum(Pk)*(kz[1]-kz[0])
-    # # Pk_1d = np.mean(Pk, axis=0)
-    # k_bins = np.linspace(kz_min, kz_max, 15)
-    # Pk_avg, edges = np.histogram(np.abs(kz), bins=k_bins, weights=Pk)
-    # plt.plot(edges[:-1], Pk_avg/Pk_integral)
-    # print(np.sum(Pk_avg))
-    # plt.plot(edges, edges**(-5/3)/(kz_min**(-2/3)-kz_max**(-2/3))/1.5)
-    # plt.xscale("log")
-    # plt.yscale("log")
-    # plt.ylim([0.05, 5000])
+    kz = fftfreq(bx.shape[1], d=0.5) * 2 * np.pi
+    # kz = np.logspace(np.log10(0.01), np.log10(kz_max), nz)
+    bx_k = fft(bx[50, :])
+
+    Pk = np.abs(bx_k) ** 2
+    Pk_integral = np.sum(Pk)*(kz[1]-kz[0])
+    # Pk_1d = np.mean(Pk, axis=0)
+    kz_min = 2*np.pi/64
+    kz_max = 2*np.pi/1
+    k_bins = np.linspace(kz_min, kz_max, 25)
+    Pk_avg, edges = np.histogram(np.abs(kz), bins=k_bins, weights=Pk)
+    plt.scatter(edges[:-1], Pk_avg/Pk_integral)
+    print(np.sum(Pk_avg))
+    plt.plot(edges, edges**(-5/3)/(kz_min**(-2/3)-kz_max**(-2/3))/1.5)
+    plt.xscale("log")
+    plt.yscale("log")
+    plt.ylim([0.05, 5000])
     # plt.show()
+    #%%
+    plt.plot(range(100), Pk_sum[0, :]
+             )
+    plt.plot(range(100), Pk_sum[1, :])
+    plt.plot(range(100), Pk_sum[2, :])
+    plt.yscale("log")
+    plt.show()
+    #%%
+    field_dir = "data_ip_shock/field_data_27"
+    # plot_power_spectra_at_different_positions(50, 100, 150, field_dir=field_dir, epoch=0,
+    #                                           nx=256, nz=128, lambda_min=1)
     # fig, ax =plt.subplots(1, 1, figsize=(6, 6))
     # ax.plot(np.mean(bz, axis=1))
     # plt.show()
