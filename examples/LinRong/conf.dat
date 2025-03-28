@@ -1,0 +1,16 @@
+&datum
+ httx = 1,                
+ htty = 1,
+ httz = 1,
+ tindex_start = 0,
+ tindex_stop = 2026640,
+ output_format = 1,
+ append_to_files = 1
+&end
+
+! NAMELIST for translate_shock
+! httx, htty, httz: domain decomposition
+! tindex_start/stop: time range, for stop, set to a large number to process all
+! output_format: 1=combined, 2=per slice
+! append_to_files: whether to append ... 
+! for cont. format set 1 to append to existing files, anything else to start at the beginning
