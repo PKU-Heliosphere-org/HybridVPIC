@@ -1,9 +1,9 @@
 #!/bin/bash
-#PBS -N test_Vasquez98
+#PBS -N sort_particles
 #PBS -l mem=100gb
 #PBS -l nodes=1:ppn=64
 #PBS -l walltime=1:00:00
-#PBS -A starting_2024_044
+#PBS -A 2025_013
 #PBS -j n
 #PBS -m abe
 #PBS -M rong.lin@student.kuleuven.be
@@ -17,20 +17,25 @@ module load OpenMPI/4.1.1-GCC-10.3.0
 module load CMake/3.20.1-GCCcore-10.3.0
 module load HDF5/1.10.7-gompi-2021a
 
+# -----------------------------------------------------------------------------
+# RUN in folder of h5group-sorter
+# with qsub
+# -----------------------------------------------------------------------------
+
 # Modify these parameters
 # -----------------------------------------------------------------------------
 trace_particles=true
 save_sorted_files=true
 load_tracer_meta=false
-run_name=test_tracing
+run_name=RD_BnPoint4_longer_in_space_tracing_dense_hall
 runpath=/dodrio/scratch/projects/2024_095/Hyb_projects/$run_name
 filepath=$runpath/tracer/tracer1
 particle=ion
 tstep_min=0
-tstep_max=5100
-tstep_interval=25
+tstep_max=5001
+tstep_interval=25 # = tracer_interval / dt
 is_recreate=0 # recreate a file?
-nsteps=100
+nsteps=200
 reduced_tracer=0
 mpi_size=64 # already defined with #PBS -l
 ux_index=6
