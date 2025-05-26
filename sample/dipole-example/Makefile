@@ -2,7 +2,8 @@
 
 # path to installed compiler wrapper
 #VPIC =~/vpic-hybrid/vpic-staggered/build/bin/vpic
-VPIC=~/vpic-hybrid/CHICOMA/hybrid-vpic-bc/build/bin/vpic
+# VPIC=~/vpic-hybrid/CHICOMA/hybrid-vpic-bc/build/bin/vpic
+VPIC = ~/Documents/GitHubOrg/HybridVPIC/build/bin
 # name of input deck file
 DECK = dipole-2dexample.cxx
 # name of platform to build for
