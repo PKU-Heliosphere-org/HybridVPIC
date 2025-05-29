@@ -84,24 +84,23 @@ begin_initialization {
   double mu0  = 1.0;  // Magnetic constanst
   double b0 = 1.0;    // Magnetic field
   double n0 = 1.0;    // Density
-  double b0x = b0*0.0;
-  double b0y = b0*0.0;
-  double b0z = b0*1.0;
-  double v1x = 0.0;
+  double b0x = b0 * 0.0;
+  double b0y = b0 * 0.0;
+  double b0z = b0 * 1.0;
   double waveamp = 0.02;
   // Derived normalization parameters:
   double v_A = b0/sqrt(mu0*n0*mi); // Alfven velocity
-  double wci = ec*b0/mi;          // Cyclotron freq
-  double di = v_A/wci;            // Ion skin-depth
+  double wci = ec*b0/mi;           // Cyclotron freq
+  double di = v_A/wci;             // Ion skin-depth
 
   
   // Initial conditions for model:
-  double Vd_Va    = 0.0; //11.4;             // Alfven Mach number
-  double Ti_Te    = 1.0/1.0;            // Ion temperature / electron temperature
-  double beta_i   = 0.1;              // Background ion beta
-  double gamma    = 1.667;              // Ratio of specific heats
-  double eta = 0.001;      // Plasma resistivity.
-  double hypereta = 0.005; // Plasma hyper-resistivity.
+  double Vd_Va    = 0.0;             // Alfven Mach number
+  double Ti_Te    = 1.0/1.0;         // Ion temperature / electron temperature
+  double beta_i   = 0.5;             // Background ion beta
+  double gamma    = 5.0/3.0;         // Ratio of specific heats
+  double eta = 0.001;                // Plasma resistivity.
+  double hypereta = 0.005;           // Plasma hyper-resistivity.
   
   // Derived quantities for model:
   double Ti = beta_i*b0*b0/2.0/n0;
@@ -111,47 +110,47 @@ begin_initialization {
   double Cs = sqrt(gamma*(1+1/Ti_Te)*beta_i/2)*v_A;  // reference: Shestov et al., A&A 2022 https://doi.org/10.1051/0004-6361/202142362
   
   // Numerical parameters
-  double taui = 50;//500;    // Simulation run time in wci^-1.
+  double taui = 200;    // Simulation run time in wci^-1.
  
-  double Lx    = 64*di;    // size of box in x dimension
-  double Ly    = 64*di;    // size of box in y dimension
-  double Lz    = 64*di;     // size of box in z dimension
+  double Lx = 50*di;    // size of box in x dimension
+  double Ly = 50*di;    // size of box in y dimension
+  double Lz = 50*di;    // size of box in z dimension
 
-  double quota   = 23.5;   // run quota in hours
+  double quota = 23.5;   // run quota in hours
   double quota_sec = quota*3600;  // Run quota in seconds
 
-  double nx = 64;//256;
-  double ny = 64;//256;
-  double nz = 64;//256;
-  double nppc = 100;//3000         // Average number of macro particle per cell per species 
+  double nx = 256;
+  double ny = 256;
+  double nz = 256;
+  double nppc = 2000;             // Average number of macro particle per cell per species 
   
-  double topology_x = 8;//32;     // Number of domains in x, y, and z
-  double topology_y = 8;//32;
-  double topology_z = 4;//16;
+  double topology_x = 32;         // Number of domains in x, y, and z
+  double topology_y = 16;
+  double topology_z = 16;
 
   // Derived numerical parameters
   double hx = Lx/nx;
   double hy = Ly/ny;
   double hz = Lz/nz;
 
-  double Ni  = nppc*nx*ny*nz;         // Total macroparticle ions in box
+  double Ni = nppc*nx*ny*nz;          // Total macroparticle ions in box
   double Np = n0*Lx*Ly*Lz;            // Total physical ions.
 
-  Ni = trunc_granular(Ni,nproc());// Make it divisible by number of processors
+  Ni = trunc_granular(Ni,nproc());    // Make it divisible by number of processors
 
-  double qi = ec*Np/Ni; // Charge per macro ion
+  double qi = ec*Np/Ni;               // Charge per macro ion
 
   double nfac = qi/(hx*hy*hz);        // Convert density to particles per cell
   
   // Determine the time step
   double dg = courant_length(Lx,Ly,Lz,nx,ny,nz);  // courant length
-  double dt = 0.5*dg/8.0;                      // courant limited time step
+  double dt = 0.5*dg/16.0;                      // courant limited time step
   double sort_interval = 20;  // How often to sort particles
   
   // Intervals for outputstd::cout<<from_wci_to_wc<<std::endl;
-  int restart_interval = 1400;
+  int restart_interval = 2000;
   int energies_interval = 100;
-  int interval = int(1/(wci*dt)); // interval for saving data.
+  int interval = int(20/(wci*dt)); // interval for saving data.
   // int interval = int(1.0/(wci*dt));
   int fields_interval = interval;
   int ehydro_interval = interval;
@@ -180,13 +179,13 @@ begin_initialization {
   global->rtoggle              = 0;
 
   global->b0  = b0;
-  global->v_A  = v_A;
+  global->v_A = v_A;
   
   global->topology_x  = topology_x;
   global->topology_y  = topology_y;
   global->topology_z  = topology_z;
 
- 
+
   //////////////////////////////////////////////////////////////////////////////
   // Setup the grid
 
@@ -300,7 +299,7 @@ begin_initialization {
   double ky0 = 2.0*M_PI/Ly;
   double kz0 = 2.0*M_PI/Lz;
  
-  const int re_num = 1;
+  const int re_num = 1; // 重复注入波动次数，相位随机。
   double kxmin = -2; double kxmax = 2;  //floor(2.0*M_PI/4.0/hx/kx0);
   double kymin = -2; double kymax = 2;  //floor(2.0*M_PI/4.0/hy/ky0);
   double kzmin = -2; double kzmax = 2;  //floor(2.0*M_PI/4.0/hz/kz0);
@@ -321,7 +320,6 @@ begin_initialization {
   std::vector<double> amplitude_ratio(num_samples);
   // double amplitude_ratio_sum = 0;  
 
-
 if (rank() == 0) {
   kx_random_temp = linspace(kxmin, kxmax, num_samples_x);
   ky_random_temp = linspace(kymin, kymax, num_samples_y);
@@ -329,29 +327,30 @@ if (rank() == 0) {
   int idx = 0;
 
   for  (int repeat = 0; repeat < re_num; repeat++){
-  for (int i = 0; i < num_samples_x; i++) {
-    for (int j = 0; j < num_samples_y; j++) {
-      for (int k = 0; k < num_samples_z; k++) {
-        kx_random[idx]  = kx_random_temp[i]*kx0;
-        ky_random[idx]  = ky_random_temp[j]*ky0;
-        kz_random[idx]  = kz_random_temp[k]*kz0;
-        phi_random[idx] = uniform(rng(0), phi_min, phi_max);
-        if ((std::abs(kx_random[idx]) < 1e-6) && (std::abs(ky_random[idx]) < 1e-6) && (std::abs(kz_random[idx]) < 1e-6)) {
-                amplitude_ratio[idx] = 0.0;
-        } else {
-                amplitude_ratio[idx] = 1.0;//* std::pow(k_total_temp/k_total_0, -3.0/4.0);          
-	}
-        idx = idx + 1;
+    for (int i = 0; i < num_samples_x; i++) {
+      for (int j = 0; j < num_samples_y; j++) {
+        for (int k = 0; k < num_samples_z; k++) {
+          kx_random[idx]  = kx_random_temp[i]*kx0;
+          ky_random[idx]  = ky_random_temp[j]*ky0;
+          kz_random[idx]  = kz_random_temp[k]*kz0;
+          phi_random[idx] = uniform(rng(0), phi_min, phi_max);
+          if ((std::abs(kx_random[idx]) < 1e-6) && (std::abs(ky_random[idx]) < 1e-6) && (std::abs(kz_random[idx]) < 1e-6)) {
+                  amplitude_ratio[idx] = 0.0;
+          } else {
+                  amplitude_ratio[idx] = 1.0;//* std::pow(k_total_temp/k_total_0, -3.0/4.0);//使用这个参数设置功率谱，默认注入等振幅波动。    
+         }
+          idx = idx + 1;
+        }
       }
     }
   }
-  }
 }
-  MPI_Bcast(amplitude_ratio.data(), num_samples, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-  MPI_Bcast(kx_random.data(), num_samples, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-  MPI_Bcast(ky_random.data(), num_samples, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-  MPI_Bcast(kz_random.data(), num_samples, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-  MPI_Bcast(phi_random.data(), num_samples, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+MPI_Bcast(amplitude_ratio.data(), num_samples, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+MPI_Bcast(kx_random.data(), num_samples, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+MPI_Bcast(ky_random.data(), num_samples, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+MPI_Bcast(kz_random.data(), num_samples, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+MPI_Bcast(phi_random.data(), num_samples, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
 
 sim_log( "Loading fields" );
@@ -375,39 +374,14 @@ double zmin = grid->z0 , zmax = grid->z0+(grid->dz)*(grid->nz);
 
 sim_log( "-> uniform plasma + specified waves" );
 
-// double nnode = 0;
-// double MAX_N_PERT = 0;
-// double temp_N;
-// for ( int i=0; i < grid->nx; i++ ) {
-//   for ( int j=0; j< grid->ny; j++ ) {
-//     for ( int k=0; k< grid->nz; k++ ) {
-//       x = xmin + (grid->dx)*(i);
-//       y = ymin + (grid->dy)*(j);
-//       z = zmin + (grid->dz)*(k);
-//       temp_N = n0+N_PERT(x,y,z,params);
-//       if (temp_N < 0){
-//         std::cout << "temp_N: " << temp_N <<std::endl;
-//       }
-//       nnode = nnode + hx*hy*hz*temp_N;
-//       if (temp_N > MAX_N_PERT) {
-//         MAX_N_PERT = n0+N_PERT(x,y,z,params);
-//       }
-//     }
-//   }
-// }
-// double nlocal = Ni*nnode/Np;
-// std::cout << "MAX_N_PERT: " << MAX_N_PERT << std::endl;
-// sim_log( "->begin nlocal" );
-
 repeat (Ni/nproc()) {
   double x,y,z, ux, uy, uz, r;
   x = uniform( rng(0), xmin, xmax );
   y = uniform( rng(0), ymin, ymax );
   z = uniform( rng(0), zmin, zmax );
-  ux = normal( rng(0), 0, vthi) + UX_PERT(x,y,z,params);// + JX_PERT(x,y,z,params)/(n0+N_PERT(x,y,z,params));
-  uy = normal( rng(0), 0, vthi) + UY_PERT(x,y,z,params);// + JY_PERT(x,y,z,params)/(n0+N_PERT(x,y,z,params));
-  uz = normal( rng(0), 0, vthi) + UZ_PERT(x,y,z,params);// + JZ_PERT(x,y,z,params)/(n0+N_PERT(x,y,z,params));
-
+  ux = normal( rng(0), 0, vthi) + UX_PERT(x,y,z,params);
+  uy = normal( rng(0), 0, vthi) + UY_PERT(x,y,z,params);
+  uz = normal( rng(0), 0, vthi) + UZ_PERT(x,y,z,params);
   inject_particle(ion, x, y, z, ux, uy, uz, qi, 0, 0 );
 }
 sim_log( "Finished loading particles" );
@@ -858,6 +832,7 @@ begin_field_injection {
 //*******************  COLLISIONS ***************************
 begin_particle_collisions {
 } // end collisions
+
 
 
 
