@@ -35,7 +35,17 @@ std::vector<double> get_k_corss_B0(int i, const PerturbationParams& params) {
     std::vector<double> B0 = {params.b0x, params.b0y, params.b0z};
     std::vector<double> cross = cross_product(k, B0);
     double cross_norm = vector_norm(cross);
-    std::vector<double> e_k_b0 = {cross[0]/cross_norm, cross[1]/cross_norm, cross[2]/cross_norm};
+    
+    if (cross_norm == 0.0) {
+        // 处理叉积为零的情况：返回默认单位向量（如z轴方向）或根据业务调整
+        return {0.0, 0.0, 1.0}; // 示例默认方向，可改为抛出异常或其他处理方式
+    }
+    
+    std::vector<double> e_k_b0 = {
+        cross[0] / cross_norm,
+        cross[1] / cross_norm,
+        cross[2] / cross_norm
+    };
     return e_k_b0;
 }
 
@@ -56,7 +66,7 @@ double BX_PERT(double x, double y, double z, const PerturbationParams& params) {
         double E1y = Bz * v1x - Bx * v1z;
         double b1x = params.ky_random[i] * E1z - params.kz_random[i] * E1y;
         double phi = params.kx_random[i] * x + params.ky_random[i] * y + params.kz_random[i] * z + params.phi_random[i];
-        bx_pert += params.amplitude_ratio[i] * b1x / norm_k / params.va * cos(phi);
+        if (std::fabs(norm_k)>1e-6)bx_pert += params.amplitude_ratio[i] * b1x / norm_k / params.va * cos(phi);
     }
     return bx_pert;
 }
@@ -78,7 +88,7 @@ double BY_PERT(double x, double y, double z, const PerturbationParams& params) {
         double E1x = By * v1z - Bz * v1y;
         double b1y = params.kz_random[i] * E1x - params.kx_random[i] * E1z;
         double phi = params.kx_random[i] * x + params.ky_random[i] * y + params.kz_random[i] * z + params.phi_random[i];
-        by_pert += params.amplitude_ratio[i] * b1y  / norm_k / params.va * cos(phi);
+        if (std::fabs(norm_k)>1e-6)by_pert += params.amplitude_ratio[i] * b1y  / norm_k / params.va * cos(phi);
     }
     return by_pert;
 }
@@ -99,7 +109,9 @@ double BZ_PERT(double x, double y, double z, const PerturbationParams& params) {
         double E1y = Bz * v1x - Bx * v1z;
         double b1z = params.kx_random[i] * E1y - params.ky_random[i] * E1x;
         double phi = params.kx_random[i] * x + params.ky_random[i] * y + params.kz_random[i] * z + params.phi_random[i];
+        if (std::fabs(norm_k)>1e-6){
         bz_pert += params.amplitude_ratio[i] * b1z  / norm_k / params.va * cos(phi);
+        }
     }
     return bz_pert;
 }

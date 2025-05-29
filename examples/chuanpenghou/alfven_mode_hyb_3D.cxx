@@ -111,7 +111,7 @@ begin_initialization {
   double Cs = sqrt(gamma*(1+1/Ti_Te)*beta_i/2)*v_A;  // reference: Shestov et al., A&A 2022 https://doi.org/10.1051/0004-6361/202142362
   
   // Numerical parameters
-  double taui = 500;    // Simulation run time in wci^-1.
+  double taui = 50;//500;    // Simulation run time in wci^-1.
  
   double Lx    = 64*di;    // size of box in x dimension
   double Ly    = 64*di;    // size of box in y dimension
@@ -120,14 +120,14 @@ begin_initialization {
   double quota   = 23.5;   // run quota in hours
   double quota_sec = quota*3600;  // Run quota in seconds
 
-  double nx = 256;
-  double ny = 256;
-  double nz = 256;
-  double nppc = 3000;         // Average number of macro particle per cell per species 
+  double nx = 64;//256;
+  double ny = 64;//256;
+  double nz = 64;//256;
+  double nppc = 100;//3000         // Average number of macro particle per cell per species 
   
-  double topology_x = 32;     // Number of domains in x, y, and z
-  double topology_y = 32;
-  double topology_z = 16;
+  double topology_x = 8;//32;     // Number of domains in x, y, and z
+  double topology_y = 8;//32;
+  double topology_z = 4;//16;
 
   // Derived numerical parameters
   double hx = Lx/nx;
@@ -399,9 +399,11 @@ sim_log( "-> uniform plasma + specified waves" );
 // std::cout << "MAX_N_PERT: " << MAX_N_PERT << std::endl;
 // sim_log( "->begin nlocal" );
 
-repeat (Ni) {
+repeat (Ni/nproc()) {
   double x,y,z, ux, uy, uz, r;
-
+  x = uniform( rng(0), xmin, xmax );
+  y = uniform( rng(0), ymin, ymax );
+  z = uniform( rng(0), zmin, zmax );
   ux = normal( rng(0), 0, vthi) + UX_PERT(x,y,z,params);// + JX_PERT(x,y,z,params)/(n0+N_PERT(x,y,z,params));
   uy = normal( rng(0), 0, vthi) + UY_PERT(x,y,z,params);// + JY_PERT(x,y,z,params)/(n0+N_PERT(x,y,z,params));
   uz = normal( rng(0), 0, vthi) + UZ_PERT(x,y,z,params);// + JZ_PERT(x,y,z,params)/(n0+N_PERT(x,y,z,params));
