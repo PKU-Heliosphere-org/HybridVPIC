@@ -1,3 +1,8 @@
+#include <vector>
+#include <random>
+#include <cmath>
+#include <cstdlib> // for rand()
+#include <ctime>   // for seeding rand()
 
 struct PerturbationParams {
     std::vector<double> amplitude_ratio;
@@ -41,15 +46,23 @@ std::vector<double> cross_product(const std::vector<double>& a, const std::vecto
         a[0] * b[1] - a[1] * b[0]
     };
 }
+
+std::vector<double> random_unit_vector(std::mt19937& rng) {
+    std::uniform_real_distribution<double> dist(0, 2 * M_PI);
+    double theta = dist(rng);
+    return {cos(theta), sin(theta), 0.0};
+}
+
 std::vector<double> get_k_cross_B0(int i, const PerturbationParams& params) {
     std::vector<double> k = {params.kx_random[i], params.ky_random[i], params.kz_random[i]};
     std::vector<double> B0 = {params.b0x, params.b0y, params.b0z};
     std::vector<double> cross = cross_product(k, B0);
     double cross_norm = vector_norm(cross);
     
-    if (cross_norm == 0.0) {
+    if (cross_norm < 1e-6) {
         // 处理叉乘为零的情况：返回默认单位向量,x轴方向
-        return {1.0, 0.0, 0.0};
+        std::mt19937 rng(i);
+	return random_unit_vector(rng);
     }
 
     std::vector<double> e_k_b0 = {

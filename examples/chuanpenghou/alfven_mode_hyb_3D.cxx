@@ -87,7 +87,7 @@ begin_initialization {
   double b0x = b0 * 0.0;
   double b0y = b0 * 0.0;
   double b0z = b0 * 1.0;
-  double waveamp = 0.02;
+  double waveamp = 0.0135;
   // Derived normalization parameters:
   double v_A = b0/sqrt(mu0*n0*mi); // Alfven velocity
   double wci = ec*b0/mi;           // Cyclotron freq
@@ -99,8 +99,8 @@ begin_initialization {
   double Ti_Te    = 1.0/1.0;         // Ion temperature / electron temperature
   double beta_i   = 0.5;             // Background ion beta
   double gamma    = 5.0/3.0;         // Ratio of specific heats
-  double eta = 0.001;                // Plasma resistivity.
-  double hypereta = 0.005;           // Plasma hyper-resistivity.
+  double eta = 0.0001;                // Plasma resistivity.
+  double hypereta = 0.0001;           // Plasma hyper-resistivity.
   
   // Derived quantities for model:
   double Ti = beta_i*b0*b0/2.0/n0;
@@ -110,11 +110,11 @@ begin_initialization {
   double Cs = sqrt(gamma*(1+1/Ti_Te)*beta_i/2)*v_A;  // reference: Shestov et al., A&A 2022 https://doi.org/10.1051/0004-6361/202142362
   
   // Numerical parameters
-  double taui = 200;    // Simulation run time in wci^-1.
+  double taui = 273;    // Simulation run time in wci^-1.
  
-  double Lx = 50*di;    // size of box in x dimension
-  double Ly = 50*di;    // size of box in y dimension
-  double Lz = 50*di;    // size of box in z dimension
+  double Lx = 64*di;    // size of box in x dimension
+  double Ly = 64*di;    // size of box in y dimension
+  double Lz = 64*di;    // size of box in z dimension
 
   double quota = 23.5;   // run quota in hours
   double quota_sec = quota*3600;  // Run quota in seconds
@@ -122,10 +122,10 @@ begin_initialization {
   double nx = 256;
   double ny = 256;
   double nz = 256;
-  double nppc = 2000;             // Average number of macro particle per cell per species 
+  double nppc = 2048;             // Average number of macro particle per cell per species 
   
   double topology_x = 32;         // Number of domains in x, y, and z
-  double topology_y = 16;
+  double topology_y = 32;
   double topology_z = 16;
 
   // Derived numerical parameters
@@ -148,9 +148,9 @@ begin_initialization {
   double sort_interval = 20;  // How often to sort particles
   
   // Intervals for outputstd::cout<<from_wci_to_wc<<std::endl;
-  int restart_interval = 2000;
+  int restart_interval = 5000;
   int energies_interval = 100;
-  int interval = int(20/(wci*dt)); // interval for saving data.
+  int interval = int(68/(wci*dt)); // interval for saving data.
   // int interval = int(1.0/(wci*dt));
   int fields_interval = interval;
   int ehydro_interval = interval;
@@ -300,9 +300,9 @@ begin_initialization {
   double kz0 = 2.0*M_PI/Lz;
  
   const int re_num = 1; // 重复注入波动次数，相位随机。
-  double kxmin = -2; double kxmax = 2;  //floor(2.0*M_PI/4.0/hx/kx0);
-  double kymin = -2; double kymax = 2;  //floor(2.0*M_PI/4.0/hy/ky0);
-  double kzmin = -2; double kzmax = 2;  //floor(2.0*M_PI/4.0/hz/kz0);
+  double kxmin = -5; double kxmax = 5;  //floor(2.0*M_PI/4.0/hx/kx0);
+  double kymin = -5; double kymax = 5;  //floor(2.0*M_PI/4.0/hy/ky0);
+  double kzmin = -5; double kzmax = 5;  //floor(2.0*M_PI/4.0/hz/kz0);
   double phi_min = 0; double phi_max = 6.28;
 
   const int num_samples_x = (kxmax-kxmin+1);
@@ -644,7 +644,7 @@ begin_diagnostics {
   //global->ehydro_interval = 1358;
   //global->Hhydro_interval = 1358;
 
-  global->restart_interval = 1400;
+  global->restart_interval = 5000;
   global->quota_sec = 23.5*3600.0;
 
   //  const int nsp=global->nsp;
