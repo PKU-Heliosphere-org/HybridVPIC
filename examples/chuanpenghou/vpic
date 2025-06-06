@@ -1,0 +1,43 @@
+#! /usr/bin/env bash
+
+deck=`echo $1 | sed 's,\.cxx,,g;s,\.cc,,g;s,\.cpp,,g;s,.*\/,,g'`
+
+#a echo "/Library/Developer/CommandLineTools/usr/bin/c++  -rdynamic -I. -I/Users/jshept/Documents/GitHubOrg/HybridVPIC/src -std=c++11 -I/opt/homebrew/Cellar/open-mpi/5.0.3_1/include  -DINPUT_DECK=$1 /Users/jshept/Documents/GitHubOrg/HybridVPIC/deck/main.cc /Users/jshept/Documents/GitHubOrg/HybridVPIC/deck/wrapper.cc -o $deck.Darwin -Wl,-rpath,/Users/jshept/Documents/GitHubOrg/HybridVPIC/build -L/Users/jshept/Documents/GitHubOrg/HybridVPIC/build -lvpic /opt/homebrew/Cellar/open-mpi/5.0.3_1/lib/libmpi.dylib /opt/homebrew/Cellar/open-mpi/5.0.3_1/lib/libmpi.dylib -lpthread -ldl"
+
+# /Library/Developer/CommandLineTools/usr/bin/c++  -rdynamic -I. \
+# -I/Users/jshept/Documents/GitHubOrg/HybridVPIC/src -std=c++11 \
+# -I/opt/homebrew/Cellar/open-mpi/5.0.3_1/include  \
+# -DINPUT_DECK=$1 \
+# /Users/jshept/Documents/GitHubOrg/HybridVPIC/deck/main.cc \
+# /Users/jshept/Documents/GitHubOrg/HybridVPIC/deck/wrapper.cc \
+# -o $deck.Darwin \
+# -Wl,-rpath,/Users/jshept/Documents/GitHubOrg/HybridVPIC/build \
+# -L/Users/jshept/Documents/GitHubOrg/HybridVPIC/build -lvpic \
+# /opt/homebrew/Cellar/open-mpi/5.0.3_1/lib/libmpi.dylib \
+# /opt/homebrew/Cellar/open-mpi/5.0.3_1/lib/libmpi.dylib -lpthread -ldl
+
+
+/Library/Developer/CommandLineTools/usr/bin/c++ -rdynamic -I. \
+-I/Users/jshept/Documents/GitHubOrg/HybridVPIC/src -std=c++11 \
+-I/usr/local/Cellar/open-mpi/1.10.2_1/include \
+-DINPUT_DECK=alfven_mode_hyb_3D.cxx \
+/Users/jshept/Documents/GitHubOrg/HybridVPIC/deck/main.cc \
+/Users/jshept/Documents/GitHubOrg/HybridVPIC/deck/wrapper.cc \
+-o alfven_mode_hyb_3D.Darwin \
+-Wl,-rpath,/Users/jshept/Documents/GitHubOrg/HybridVPIC/build \
+-L/Users/jshept/Documents/GitHubOrg/HybridVPIC/build -lvpic \
+-L/usr/local/Cellar/open-mpi/1.10.2_1/lib -lmpi \
+-lpthread -ldl
+
+echo "\
+/Library/Developer/CommandLineTools/usr/bin/c++ -rdynamic -I. \
+-I/Users/jshept/Documents/GitHubOrg/HybridVPIC/src -std=c++11 \
+-I/usr/local/Cellar/open-mpi/1.10.2_1/include \
+-DINPUT_DECK=alfven_mode_hyb_3D.cxx \
+/Users/jshept/Documents/GitHubOrg/HybridVPIC/deck/main.cc \
+/Users/jshept/Documents/GitHubOrg/HybridVPIC/deck/wrapper.cc \
+-o alfven_mode_hyb_3D.Darwin \
+-Wl,-rpath,/Users/jshept/Documents/GitHubOrg/HybridVPIC/build \
+-L/Users/jshept/Documents/GitHubOrg/HybridVPIC/build -lvpic \
+-L/usr/local/Cellar/open-mpi/1.10.2_1/lib -lmpi \
+-lpthread -ldl"

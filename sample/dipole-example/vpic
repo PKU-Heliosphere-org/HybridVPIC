@@ -1,0 +1,5 @@
+#! /usr/bin/env bash
+
+deck=`echo $1 | sed 's,\.cxx,,g;s,\.cc,,g;s,\.cpp,,g;s,.*\/,,g'`
+
+/Library/Developer/CommandLineTools/usr/bin/c++  -rdynamic -I. -I/Users/jshept/Documents/GitHubOrg/HybridVPIC/src -std=c++11 -I/opt/homebrew/Cellar/open-mpi/5.0.3_1/include -I/Library/Developer/CommandLineTools/usr/include/c++/v1 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -I/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include -I/Library/Developer/CommandLineTools/SDKs/MacOSX12.3.sdk/usr/include -I/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1 -I/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include -DINPUT_DECK=$1 /Users/jshept/Documents/GitHubOrg/HybridVPIC/deck/main.cc /Users/jshept/Documents/GitHubOrg/HybridVPIC/deck/wrapper.cc -o $deck.Darwin -Wl,-rpath,/Users/jshept/Documents/GitHubOrg/HybridVPIC/build -L/Users/jshept/Documents/GitHubOrg/HybridVPIC/build -lvpic /opt/homebrew/Cellar/open-mpi/5.0.3_1/lib/libmpi.dylib /opt/homebrew/Cellar/open-mpi/5.0.3_1/lib/libmpi.dylib -lpthread -ldl
