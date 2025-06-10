@@ -54,10 +54,33 @@ namespace settings {
     double waveamp;
   };
 
+  struct SimuSetting {
+    double taui = 200;  // Simulation run time in 1 / omega_ci.
+    double Lx_di = 50;  // Length of regions in di.
+    double Ly_di = 50;
+    double Lz_di = 50;
+
+    double quota_h = 23.5;
+
+    double nx = 256;
+    double ny = 256;
+    double nz = 256;
+    double nppc = 2'000;
+
+    double topology_x = 32;
+    double topology_y = 16;
+    double topology_z = 16;
+
+    inline double get_quota_sec() {return quota_h * 3'600.0; }
+  };
+
   struct SettingTerms {
     PlasmaConstSetting consts;
     WaveSetting wave;
     PlasmaFeatureSetting plasma;
+    SimuSetting rc;
+
+    // Derived numerical parameters
   };
 } // namespace settings
 
