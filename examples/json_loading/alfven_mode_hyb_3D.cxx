@@ -72,6 +72,7 @@ namespace settings {
     double topology_z = 16;
 
     inline double get_quota_sec() {return quota_h * 3'600.0; }
+    inline double get_Ni() {return trunc_granular(nppc * nx * ny * nz, nproc()); }
   };
 
   struct SettingTerms {
@@ -81,6 +82,15 @@ namespace settings {
     SimuSetting rc;
 
     // Derived numerical parameters
+    inline double get_Lx() {return rc.Lx_di * consts.get_di(); }
+    inline double get_Ly() {return rc.Ly_di * consts.get_di(); }
+    inline double get_Lz() {return rc.Lz_di * consts.get_di(); }
+    inline double get_hx() {return rc.Lx_di * consts.get_di() / rc.nx; }
+    inline double get_hy() {return rc.Ly_di * consts.get_di() / rc.ny; }
+    inline double get_hz() {return rc.Lz_di * consts.get_di() / rc.nz; }
+    inline double get_Np() {return consts.n0 * rc.Lx_di * rc.Ly_di * rc.Lz_di * pow(consts.get_di(), 3.0); }
+    inline double get_qi() {return consts.ec * get_Np() / rc.get_Ni(); }
+    inline double get_nfac() {return get_qi() / (get_hx() * get_hy() * get_hz()); }
   };
 } // namespace settings
 
