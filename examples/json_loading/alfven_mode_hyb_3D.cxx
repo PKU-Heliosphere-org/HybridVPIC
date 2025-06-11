@@ -9,6 +9,7 @@
 // #define NUM_TURNSTILES 16384
 #include <mpi.h>
 #include <iostream>
+#include <ifstream>
 #include <vector>
 #include <cmath>  // for round()
 #include "alfven_mode_polarization_3D.cxx"
@@ -71,6 +72,18 @@ namespace settings {
     double topology_y = 16;
     double topology_z = 16;
 
+    double sort_interval = 20;
+
+    int restart_interval = 2'000;
+    int energies_interval = 100;
+
+    int fields_interval_rel = 1;
+    int shydro_interval_rel = 1;
+    int Hhydro_interval_rel = 1;
+    int eparticle_interval_rel = 10;
+    int Hparticle_interval_rel = 0;
+    int quota_check_interval_rel = 10;
+
     inline double get_quota_sec() {return quota_h * 3'600.0; }
     inline double get_Ni() {return trunc_granular(nppc * nx * ny * nz, nproc()); }
   };
@@ -91,6 +104,22 @@ namespace settings {
     inline double get_Np() {return consts.n0 * rc.Lx_di * rc.Ly_di * rc.Lz_di * pow(consts.get_di(), 3.0); }
     inline double get_qi() {return consts.ec * get_Np() / rc.get_Ni(); }
     inline double get_nfac() {return get_qi() / (get_hx() * get_hy() * get_hz()); }
+
+    inline double get_dg() {return courant_length(get_Lx(), get_Ly(), get_Lz(), rc.nx, rc.ny, rc.nz);}
+    inline double get_dt() {return 0.5 * get_dg() / 16.0; }
+    inline int get_interval() {return int(20.0 / (consts.get_omega_ci() * get_dt())); }
+
+#define JSTEIN_INTERVAL_DEFINE_MACHINE(name_prefix) \
+    inline int get_##name_prefix##_interval() {return get_interval() * rc.name_prefix##_interval_rel; }
+
+    JSTEIN_INTERVAL_DEFINE_MACHINE(fields)
+    JSTEIN_INTERVAL_DEFINE_MACHINE(shydro)
+    JSTEIN_INTERVAL_DEFINE_MACHINE(Hhydro)
+    JSTEIN_INTERVAL_DEFINE_MACHINE(eparticle)
+    JSTEIN_INTERVAL_DEFINE_MACHINE(Hparticle)
+    JSTEIN_INTERVAL_DEFINE_MACHINE(quota_check)
+
+#undef JSTEIN_INTERVAL_DEFINE_MACHINE
   };
 } // namespace settings
 
@@ -157,6 +186,11 @@ begin_globals {
 
 
 begin_initialization {
+
+  // Load the JSON file.
+  std::ifstream f_json("simu_setup.json");
+  json j = json::parse(f_json);
+  auto params = j.template get<settings::SettingTerms>();
 
   // Use natural hybrid-PIC units:
   double ec   = 1.0;  // Charge normalization
