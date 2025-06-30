@@ -88,7 +88,7 @@ begin_initialization {
   double b0x = b0*0.0;
   double b0y = b0*0.0;
   double b0z = b0*1.0;
-  double waveamp = 0.02; // 0.02;
+  double waveamp = 0.02;
   // double mi_me     = 100.0;
   // Derived normalization parameters:
   double v_A = b0/sqrt(mu0*n0*mi); // Alfven velocity
@@ -101,8 +101,8 @@ begin_initialization {
   double Ti_Te    = 1.0/1.0;            // Ion temperature / electron temperature
   double beta_i   = 0.1;              // Background ion beta
   double gamma    = 1.667;              // Ratio of specific heats
-  double eta = 0.01;      // Plasma resistivity.
-  double hypereta = 0.05; // Plasma hyper-resistivity.
+  double eta = 0.0;      // Plasma resistivity.
+  double hypereta = 0.0; // Plasma hyper-resistivity.
   
   // Derived quantities for model:
   double Ti = beta_i*b0*b0/2.0/n0;
@@ -120,7 +120,7 @@ begin_initialization {
   double Lz    = 1024*di;     // size of box in z dimension
 
   double from_wci_to_wc = 1/(Lx/v_A)/wci;
-  double taui = 4.0/from_wci_to_wc;    // Simulation run time in Va/L.
+  double taui = 8.0/from_wci_to_wc;    // Simulation run time in Va/L.
   double quota   = 23.5;   // run quota in hours
   double quota_sec = quota*3600;  // Run quota in seconds
   std::cout<<"from_wci_to_wc"<<std::endl;
@@ -128,7 +128,7 @@ begin_initialization {
   double nx = 512;
   double ny = 512;
   double nz = 512;
-  double nppc = 300;         // Average number of macro particle per cell per species 
+  double nppc = 500;         // Average number of macro particle per cell per species 
   
   double topology_x = 32;     // Number of domains in x, y, and z
   double topology_y = 32;
@@ -151,8 +151,8 @@ begin_initialization {
   // Determine the time step
   double dg = courant_length(Lx,Ly,Lz,nx,ny,nz);  // courant length
   std::cout<<"dg"<<dg<<std::endl;
-  double dt = 0.01; // 0.5*dg/8.0;                      // courant limited time step
-  double sort_interval = 50;  // How often to sort particles
+  double dt = 0.1; // 0.5*dg/8.0;                      // courant limited time step
+  double sort_interval = 20;  // How often to sort particles
   
   // Intervals for outputstd::cout<<from_wci_to_wc<<std::endl;
   int restart_interval = 10000;
