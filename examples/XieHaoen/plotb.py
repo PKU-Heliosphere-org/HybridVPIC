@@ -243,8 +243,16 @@ if __name__ == "__main__":
     end = start + chunk_size if rank != size - 1 else nt  # 最后一个进程处理剩余切片
     print(f"进程 {rank} 负责处理切片 {start} 到 {end-1}")
 
+    # 初始化温度和能量演化数组（用于存储当前进程处理的切片数据）
+    T_perp_arr = np.zeros(end - start)
+    T_para_arr = np.zeros(end - start)
+    E_b = np.zeros(end - start)
+    E_k = np.zeros(end - start)
+    E_t = np.zeros(end - start)
+    E_total = np.zeros(end - start)
+
     # 并行处理分配的切片
-    for sl in range(start, end):
+    for idx, sl in enumerate(range(start, end)):
         print(f"进程 {rank} 正在处理切片 {sl}/{nt-1}")
 
         # 读取当前切片的所有场数据
@@ -489,23 +497,13 @@ if __name__ == "__main__":
         plt.savefig(f'energy/energy_slice_{sl:04d}.png')
         plt.close()
 
-        # 保存每个切片的温度平均值（仅主进程收集所有数据后绘制）
-        if rank == 0:
-            T_perp_arr = np.zeros(nt)
-            T_para_arr = np.zeros(nt)
-            E_b = np.zeros(nt)
-            E_k = np.zeros(nt)
-            E_t = np.zeros(nt)
-            E_total = np.zeros(nt)
-
-            # 主进程需要读取所有切片的数据来计算时间演化
-            if sl < nt:  # 防止越界
-                T_perp_arr[sl] = np.mean(T_perp)
-                T_para_arr[sl] = np.mean(T_parallel)
-                E_b[sl] = np.mean(Eb_tot[:,:])
-                E_k[sl] = np.mean(Ek_tot[:,:])
-                E_t[sl] = np.mean(E_th[:,:])
-                E_total[sl] = np.mean(E_tot[:,:])
+        # 存储当前切片的温度和能量平均值（使用idx作为当前进程内的索引）
+        T_perp_arr[idx] = np.mean(T_perp)
+        T_para_arr[idx] = np.mean(T_parallel)
+        E_b[idx] = np.mean(Eb_tot)
+        E_k[idx] = np.mean(Ek_tot)
+        E_t[idx] = np.mean(E_th)
+        E_total[idx] = np.mean(E_tot)
 
     # 等待所有进程完成
     comm.Barrier()
@@ -515,32 +513,47 @@ if __name__ == "__main__":
     if rank == 0:
         print("正在生成时间演化图...")
         
-        # 收集所有进程的温度和能量数据
+        # 初始化完整的时间演化数组
+        full_T_perp = np.zeros(nt)
+        full_T_para = np.zeros(nt)
+        full_E_b = np.zeros(nt)
+        full_E_k = np.zeros(nt)
+        full_E_t = np.zeros(nt)
+        full_E_total = np.zeros(nt)
+        
+        # 填充主进程自己处理的切片数据
+        full_T_perp[start:end] = T_perp_arr
+        full_T_para[start:end] = T_para_arr
+        full_E_b[start:end] = E_b
+        full_E_k[start:end] = E_k
+        full_E_t[start:end] = E_t
+        full_E_total[start:end] = E_total
+        
+        # 接收所有子进程的数据
         for proc in range(1, size):
-            if proc < (nt // chunk_size):  # 防止进程数超过需要的数量
-                proc_start = proc * chunk_size
-                proc_end = proc_start + chunk_size if proc != size - 1 else nt
-                
-                # 接收子进程的数据
-                T_perp_data = comm.recv(source=proc, tag=100)
-                T_para_data = comm.recv(source=proc, tag=101)
-                E_b_data = comm.recv(source=proc, tag=102)
-                E_k_data = comm.recv(source=proc, tag=103)
-                E_t_data = comm.recv(source=proc, tag=104)
-                E_total_data = comm.recv(source=proc, tag=105)
-                
-                # 更新主进程的数组
-                T_perp_arr[proc_start:proc_end] = T_perp_data
-                T_para_arr[proc_start:proc_end] = T_para_data
-                E_b[proc_start:proc_end] = E_b_data
-                E_k[proc_start:proc_end] = E_k_data
-                E_t[proc_start:proc_end] = E_t_data
-                E_total[proc_start:proc_end] = E_total_data
+            proc_start = proc * chunk_size
+            proc_end = proc_start + chunk_size if proc != size - 1 else nt
+            
+            # 接收子进程的数据
+            T_perp_data = comm.recv(source=proc, tag=100)
+            T_para_data = comm.recv(source=proc, tag=101)
+            E_b_data = comm.recv(source=proc, tag=102)
+            E_k_data = comm.recv(source=proc, tag=103)
+            E_t_data = comm.recv(source=proc, tag=104)
+            E_total_data = comm.recv(source=proc, tag=105)
+            
+            # 填充到完整数组
+            full_T_perp[proc_start:proc_end] = T_perp_data
+            full_T_para[proc_start:proc_end] = T_para_data
+            full_E_b[proc_start:proc_end] = E_b_data
+            full_E_k[proc_start:proc_end] = E_k_data
+            full_E_t[proc_start:proc_end] = E_t_data
+            full_E_total[proc_start:proc_end] = E_total_data
         
         # 绘制温度演化图
         plt.figure(figsize=(10, 6))
-        plt.plot(np.arange(nt) * dt, T_perp_arr, label='T_perp')
-        plt.plot(np.arange(nt) * dt, T_para_arr, label='T_parallel')
+        plt.plot(np.arange(nt) * dt, full_T_perp, label='T_perp')
+        plt.plot(np.arange(nt) * dt, full_T_para, label='T_parallel')
         plt.xlabel('Time')
         plt.ylabel('Temperature')
         plt.title('Temperature Evolution')
@@ -551,10 +564,10 @@ if __name__ == "__main__":
         
         # 绘制能量演化图
         plt.figure(figsize=(10, 6))
-        plt.plot(np.arange(nt) * dt, E_b, label='E_mag')
-        plt.plot(np.arange(nt) * dt, E_k, label='E_kinetic')
-        plt.plot(np.arange(nt) * dt, E_t, label='E_themal')
-        plt.plot(np.arange(nt) * dt, E_total, label='E_total')
+        plt.plot(np.arange(nt) * dt, full_E_b, label='E_mag')
+        plt.plot(np.arange(nt) * dt, full_E_k, label='E_kinetic')
+        plt.plot(np.arange(nt) * dt, full_E_t, label='E_thermal')
+        plt.plot(np.arange(nt) * dt, full_E_total, label='E_total')
         plt.grid(True)
         plt.xlabel('Time')
         plt.ylabel('Energy')
@@ -564,12 +577,11 @@ if __name__ == "__main__":
         plt.close()
         
         print("所有图像生成完成！")
-    # else:
+    else:
         # 子进程发送数据给主进程
-        # if start < nt:  # 防止越界
-        #     comm.send(T_perp_arr[start:end], dest=0, tag=100)
-        #     comm.send(T_para_arr[start:end], dest=0, tag=101)
-        #     comm.send(E_b[start:end], dest=0, tag=102)
-        #     comm.send(E_k[start:end], dest=0, tag=103)
-        #     comm.send(E_t[start:end], dest=0, tag=104)
-        #     comm.send(E_total[start:end], dest=0, tag=105)    
+        comm.send(T_perp_arr, dest=0, tag=100)
+        comm.send(T_para_arr, dest=0, tag=101)
+        comm.send(E_b, dest=0, tag=102)
+        comm.send(E_k, dest=0, tag=103)
+        comm.send(E_t, dest=0, tag=104)
+        comm.send(E_total, dest=0, tag=105)
