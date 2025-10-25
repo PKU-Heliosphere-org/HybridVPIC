@@ -1,0 +1,2468 @@
+//////////////////////////////////////////////////////
+//
+//   Shock
+//   Bounce off a wall on left. Open inject on right
+//////////////////////////////////////////////////////
+
+//#define NUM_TURNSTILES 16384
+#include <math.h>
+#include <list>
+#include <iterator>
+#include "vpic/dumpmacros.h"
+#include "injection.hh"
+//#include "injection.cxx" //  Routines to compute re-injection velocity 
+#include "tracer.hh" // Rountines to trace the particles
+#include "hdf5.h"
+#include "time_average_master.hh"
+//#include "injection_for_PUI.hh"
+
+//////////////////////////////////////////////////////
+#define NUMFOLD (rank()/16)
+// structure to hold the data for energy diagnostics
+struct edata {
+  species_id sp_id;       /* species id */
+  double       vth;       /* thermal energy */
+  char  fname[256];       /* file to save data */
+};
+
+// electric and magnetic fields
+typedef struct emf {
+  float ex, ey, ez;     // Electric field and div E error
+  float cbx, cby, cbz;  // Magnetic field and div B error
+} emf_t;
+
+// Whether to simulation turbulence
+/* #define TURBULENCE_SIMULATION */
+
+// Whether only electrons carry current (for forcefree sheet only)
+#define ELECTRONS_CARRRY_CURRENT
+// Whether to use HDF5 format for dumping fields and hydro
+#define DUMP_WITH_HDF5
+
+#ifdef DUMP_WITH_HDF5
+// Deck only works if VPIC was build with HDF support. Check for that:
+// #ifndef VPIC_ENABLE_HDF5
+// #error "VPIC_ENABLE_HDF5" is required
+// #endif
+#endif
+
+// naming convention for the dump files
+#define HYDRO_FILE_FORMAT "hydro/%d/T.%d/%s.%d.%d"
+#define SPEC_FILE_FORMAT "hydro/%d/T.%d/spectrum-%s.%d.%d"
+
+// directory on scratch space for dumping data
+#define DUMP_DIR_FORMAT "./%s"
+
+// array access
+#define LOCAL_CELL_ID(x,y,z) VOXEL(x, y, z, grid->nx, grid->ny, grid->nz)
+#define HYDRO(x,y,z) hi[LOCAL_CELL_ID(x,y,z)]
+#define HYDRO_TOT(x,y,z) htot[LOCAL_CELL_ID(x,y,z)]
+
+// Vadim's in-line average
+#define ALLOCATE(A,LEN,TYPE)                                    \
+  if ( !((A)=(TYPE *)malloc((size_t)(LEN)*sizeof(TYPE))) )      \
+    ERROR(("Cannot allocate."));
+
+void
+checkpt_subdir( const char * fbase, int tag )
+{
+  char fname[256];
+  if( !fbase ) ERROR(( "NULL filename base" ));
+  sprintf( fname, "%s/%i/restore.0.%i", fbase, tag, world_rank );
+  if( world_rank==0 ) log_printf( "*** Checkpointing to \"%s\"\n", fbase );
+  checkpt_objects( fname );
+}
+begin_globals {
+  int num_i_tracer;
+  int num_alpha_tracer;
+  int num_pui_tracer;   // tracer index
+  int i_particle;   // ion particle index
+  int alpha_particle;   // alpha particle index
+  int pui_particle;   // pui particle index
+
+  int restart_interval;
+  int energies_interval;
+  int fields_interval;
+  int ehydro_interval;
+  int Hhydro_interval;
+  int eparticle_interval;
+  int Hparticle_interval;
+  int quota_check_interval;  // How frequently to check if quota exceeded
+
+  int rtoggle;               // enables save of last 2 restart dumps for safety
+  int write_restart;     // global flag for all to write restart files
+  int write_end_restart; // global flag for all to write restart files
+  
+  double quota_sec;          // Run quota in seconds
+  double b0;                 // B0
+  double bg;
+  double v_A;
+  double nb;
+  double topology_x;       // domain topology
+  double topology_y;
+  double topology_z;
+  int restart_step;     // time step for restart dump
+  double uf[2];
+  double ux_inject[2];
+  double ratio[2];
+  double sort[2]; // Intervals where we know particles are sorted
+# define NUM_SPECS (2)
+
+//  Variables for Open BC Model
+  int nsp;          //  Number of Species
+  double npleft[NUM_SPECS];  // Left Densities
+  double npright[NUM_SPECS];  // Right Densities
+  double vth[NUM_SPECS];    // Thermal velocity
+  double q[NUM_SPECS];      // Species charge
+  double vthb[NUM_SPECS];    // Thermal velocity
+
+  double ur;       //  Fluid velociy on right
+  double ul;       //  Fluid velociy on left
+  double nfac;      //  Normalization factor to convert particles per cell into density
+  double sn;       //sin(theta)
+  double n_0;
+  // int left,right;  // Keep track of boundary domains
+  // double *nleft, *uleft, *pleft, *bleft, *fleft;     // Moments for left injectors
+  // double *nright, *uright, *pright, *bright, *fright; // Moments for right injectors
+  double edrive;  // Drive field for inflow boundary
+  double tdrive;
+  int left,right,top,bottom;  // Keep track of boundary domains
+  // Moments for bottom injectors
+  double *nbot, *ubot, *pbot, *bbot, *fbot;
+  // Moments for top injectors
+  double *ntop, *utop, *ptop, *btop, *ftop;
+  // Moments for left injectors
+  double *nleft, *uleft, *pleft, *bleft, *fleft;
+  // Moments for right injectors
+  double *nright, *uright, *pright, *bright, *fright;
+  double rin[3];  // Relaxation parameter for inflow boundary moments
+  double rout[3]; // Relaxation parameter for outlfow boundary moments
+  double n_inject[NUM_SPECS];
+  // Output variables
+  DumpParameters fdParams;
+  DumpParameters hHdParams_c;
+  DumpParameters hHdParams_b;
+  std::vector<DumpParameters *> outputParams;
+
+    // particle tracking
+  int tracer_interval;         // tracer info is saved or dumped every tracer_interval steps
+  int tracer_pass1_interval;   // tracer interval for the 1st run. A multiple of tracer_interval
+  int tracer_pass2_interval;   // tracer interval for the re-run. A multiple of tracer_interval
+  int tracer_file_interval;    // interval when multiple frames of tracers are saved in the same file
+  int emf_at_tracer;           // 0 or 1, electric and magnetic fields at tracer
+  int hydro_at_tracer;         // 0 or 1, hydro fields at tracer
+  int ve_at_tracer;            // 0 or 1, electron bulk velocity at tracer
+  int num_tracer_fields_add;   // additional number of tracer fields
+  int particle_tracing;
+  int particle_select;
+  int i_particle_select;
+  int alpha_particle_select;
+  int pui_particle_select;
+  int particle_tracing_start;
+  int dump_traj_directly;
+  species_t *tracers_list;
+  int tag;
+  double mi_me;
+  int Ntracer;
+  double PUI_flux;
+  double PUI_flux_normalized;
+  double M;
+  // double alpha_PUI;
+  // double r;
+  // double Vc; 
+  int stride_particle_dump;  // stride for particle dump
+  double L;
+  //double vthb;
+};
+
+// Define the PUI velocity distribution and generator the random number
+/*
+double stepFunction(double x) {  
+    if (x < 0) {  
+        return 0.0; 
+    } else {  
+        return 1.0;  
+    }  
+}  */
+// double velocity_pdf(double x, double r, double alpha, double eta) {  
+//     // 
+//     double lambda = 3.4;
+    
+//     if (x <= 0) return 0.0;  
+//     return pow(x,alpha-3)*exp(-lambda/r*pow(x,-alpha))*stepFunction(1-x) ; // 
+// }
+
+// double PUI_flux_to_right(double r, double alpha, double eta, double v_u, double v_b){
+//   double S=0;
+//   double delta_v = 0.01;
+//   double delta_theta = 0.01*M_PI/2;
+//   double N0 = speed_cdf(1, r, alpha, eta);
+//   for (int i = 0; i<floor(sqrt(v_b*v_b-v_u*v_u)/delta_v);++i){
+//     for (int j = 1; j<floor(M_PI/2/delta_theta);++j){
+//       double w = sqrt(i*i*delta_v*delta_v+2*i*delta_v*v_u*cos(j*delta_theta)+v_u*v_u)/v_b;
+//       //std::cout<<"i="<<i<<" "<<"w="<<w<<"\n";
+//       S += 2*M_PI*velocity_pdf(w, r, alpha, eta)*w*w*w*cos(j*delta_theta)*sin(j*delta_theta)*delta_v*delta_theta/N0;
+//       // if (i%20==0){
+//       // std::cout<<"w="<<w<<"\n";
+//       // }
+//     }
+    
+//   }
+//   return S;
+// }
+
+
+begin_initialization {
+  
+  // Use natural hybrid-PIC units:
+  double ec   = 1.0;  // Charge normalization
+  double mi   = 1.0;  // Mass normalization
+  double mi_me = 10.0; //
+  double me = mi/mi_me;
+  double mu0  = 1.0;  // Magnetic constanst
+  double b0 = 1.0;    // Magnetic field
+  double bg = 0.2;
+  double n0 = 1.0;    // Density
+
+  
+  // Derived normalization parameters:
+  double v_A = b0/sqrt(mu0*n0*mi); // Alfven velocity
+  double v_beam_drift = 1.0;//1.0;       // Drift velocity of beam
+
+  double wci = ec*b0/mi;          // Cyclotron freq
+  double di = v_A/wci;            // Ion skin-depth
+
+  
+  // Initial conditions for model:
+  double Vd_Va    = 1.86;           //11.4;             // Alfven Mach number(11.4 for TS, 3.0 for Interplanetary shock)
+  double Ti_Te    = 1;            // Ion temperature / electron temperature
+  double theta    = 0 * M_PI / 180.0; // 10.0*M_PI/180.0;  // Shock normal/B field angle
+  double beta_i   = 0.5;//0.5;//0.5;//0.25;     //1.0         // Background ion beta
+  double beta_e = 0.5;                  //Background electron beta
+  double gamma    = 1.0;//5.0/3.0;              // Ratio of specific heats
+  double L_di = 0.5;
+  double eta = 0.001;      // Plasma resistivity.
+  double hypereta = 0.005; // Plasma hyper-resistivity.
+
+  
+
+
+  // Derived quantities for model:
+ 
+  double Ti = beta_i*b0*b0/2.0/n0;
+  double Te = Ti/Ti_Te;
+  double n_0 = b0*b0/2/Te/(1+Ti_Te); // Current sheet ion density
+  double n_back = 0.4*n_0; // Background ion density
+  
+
+  double Ti_c = Ti;
+  double Ti_b = Ti;
+  double vthi = sqrt(Ti/mi);
+  double vthi_c = sqrt(Ti_c/mi);
+  double vthi_b = sqrt(Ti_b/mi);
+  double vth_alpha;
+  //double Te = Ti/Ti_Te;
+  double vthe = sqrt(Te/me);
+  double vtha = vthi*2;
+  double Vd = Vd_Va*v_A;
+  double cs       = cos(theta);
+  double sn       = sin(theta);
+
+  // Numerical parameters
+  double taui    = 75;//50;//50;    // Simulation run time in wci^-1.
+  double quota   = 23.5;   // run quota in hours
+  double quota_sec = quota*3600;  // Run quota in seconds
+  
+  double Lx    = 64*di;    // size of box in x dimension
+  double Ly    = 1.0*di;    // size of box in y dimension
+  double Lz    = 64*di;     // size of box in z dimension
+  double L = L_di*di;  
+  double nx = 128;//256;
+  double ny = 1;
+  double nz = 256;//32;
+
+  double nppc  = 1024;//2048;         // Average number of macro particle per cell per species 
+  
+  double topology_x = 16;     // Number of domains in x, y, and z
+  double topology_y = 1;
+  double topology_z = 16;
+
+  DumpParameters fdParams;
+  std::vector<DumpParameters *> outputParams;
+  DumpParameters hedParams;
+  DumpParameters hHdParams_c;
+  DumpParameters hHdParams_b;
+  edata ede;            // electron species information
+  edata edH;            // ion species information
+
+  // Derived numerical parameters
+  double hx = Lx/nx;
+  double hy = Ly/ny;
+  double hz = Lz/nz;
+  #define n(z) (n_back + n_0 / (cosh(z/L) * cosh(z/L))) // Ion density profile
+  // double nsheet = 0;
+  // for (int i=0; i<nx; i++ ) {
+
+  // for ( int j=0; j< nz; j++ ) {
+  //     double xx = hx*(i)-Lx/2;
+  //     double  zz = hz*(j)-Lz/2;
+	//     nsheet = nsheet + hx*hz*n(zz);
+  //     }
+  //   } 
+  double N_i2N_pui = 5;//1/0.058;
+  double N_i2N_alpha = 11.65;
+  double nb_nc = 0.5;
+  double ratio_core = 1/(1+nb_nc); // fraction of ions in core region
+  // double Np_sheet = n0*nsheet*Ly;       // Total number of physical ions in sheet
+  // double Np_back  = n_back*Lx*Ly*Lz;  // Total number of physical background ions
+  double Ni  = nppc*nx*ny*nz;         // Total macroparticle ions in box
+  double Ni_c  = nppc*nx*ny*nz*ratio_core;         // Total core macroparticle ions in box
+  double Ni_b  = nppc*nx*ny*nz*(1-ratio_core);         // Total beam macroparticle ions in box
+  double Nalpha = nppc*nx*ny*nz/N_i2N_alpha;
+  double Npui  = nppc*nx*ny*nz/N_i2N_pui;         // Total macroparticle PUIs in box
+  double Ne  = Ni+Npui;         // Total macroparticle electrons in box
+  double Np = 2*n_0*Lx*Ly*L*tanh(0.5*Lz/L)+n_back*Lx*Ly*Lz;//n0*Lx*Ly*Lz;            // Total physical ions.
+
+  Ni = trunc_granular(Ni,nproc());// Make it divisible by number of processors
+  Ni_c = trunc_granular(Ni_c,nproc());// Make it divisible by number of processors
+  Ni_b = trunc_granular(Ni_b,nproc());// Make it divisible by number of processors
+  Nalpha = trunc_granular(Nalpha,nproc());// Make it divisible by number of processors
+  Npui = trunc_granular(Npui,nproc());// Make it divisible by number of processors
+  double qi = ec*Np/Ni; // Charge per macro ion
+  double qa = 2*ec*Np/Ni;// Charge per macro alpha particle
+  double rin[3] =  {0.000, 0.06, 0.000};
+  double rout[3] = {0.002, 0.002, 0.002};
+  double nfac = qi/(hx*hy*hz);        // Convert density to particles per cell
+  double edrive = 0.15*v_A;    // edrive = 0 gives undriven limit
+  //double edrive = 0.0099;    // Setting edrive = 0 will give undriven limit
+  double vdri = 2*Ti/(ec*b0*L);   // Ion drift velocity
+  double vdre = -vdri/(Ti_Te);      // electron drift velocity
+  double tdrive = 32000.0;
+  //  double udre = b0/L;
+  //  double udri = 0.0;
+  double udri = 0;//2*Ti/(ec*b0*L);   // Ion drift velocity
+  double Lpert = Lx;                       // wavelength of perturbation
+  double dbz = 0.05*b0;                    // Perturbation in Bz rel. to Bo (Only change here)
+  double dbx = -dbz*Lpert/(2.0*Lz);        // Set Bx perturbation so that div(B) = 0
+  // Determine the time step
+  double dg = courant_length(Lx,Ly,Lz,nx,ny,nz);  // courant length
+  //std::cout<<"dg = "<<dg<<std::endl;
+  double dt = 0.0025/wci;//0.005/wci;                      // courant limited time step
+  int tracer_interval = int(0.5/(wci*dt));
+  if (tracer_interval == 0) tracer_interval = 1;
+  int tracer_pass1_interval = tracer_interval;
+  int tracer_pass2_interval = tracer_interval;
+  double sort_interval = 10;  // How often to sort particles
+  
+//particle tracking
+  int particle_tracing = 1; // 0: notracing, 1: forward tracing 2: tracing from particle files
+  int particle_select = 50; // track one every particle_select particles
+  int i_particle_select = particle_select;
+  int pui_particle_select = 10;
+  int alpha_particle_select = 11;
+  int particle_tracing_start = 0; // the time step that particle tracking is triggered
+                                  // this should be set to 0 for Pass1 and 2
+  int nframes_per_tracer_file = 50; // number of frames of tracers saved in one tracer file
+  int dump_traj_directly = 0;     // dump particle trajectories in 1st pass
+  int emf_at_tracer = 1;          // electric and magnetic fields at tracer
+  int hydro_at_tracer = 0;        // hydro fields at tracer
+  int ve_at_tracer = 0;           // electron bulk velocity
+  int num_emf = 0;                // number of electric and magnetic field, change between passes
+  int num_hydro = 0;
+    if (emf_at_tracer) num_emf = 6; // Make sure the sum of these two == TRACER_NUM_ADDED_FIELDS
+  if (hydro_at_tracer) {
+    num_hydro = 5; // single fluid velocity, electron and ion number densities
+    if (ve_at_tracer) num_hydro += 3;
+  } else {
+    ve_at_tracer = 0;
+  }
+  double Ntracer = Ne / particle_select;   // Number of particle tracers for each species
+  Ntracer = trunc_granular(Ntracer, nproc());
+  // Intervals for output
+  int restart_interval = 3000000;
+  int energies_interval = 200;
+  int interval = int(1.0/(wci*dt));
+  int fields_interval = interval;
+  int ehydro_interval = interval;
+  int Hhydro_interval = interval;
+  int eparticle_interval = 40*interval;
+  int Hparticle_interval = interval;
+  int quota_check_interval     = 100;
+  int stride_particle_dump = 40; // stride for particle dump
+//   double factor = (3-alpha_PUI)/alpha_PUI;
+//   double f_pui_max = pow(lambda/r_PUI/factor, -factor)*exp(-factor);
+//   double PUI_flux = integral_flux(Vd, 0.001, 0.01);
+//   double M = pow(Vc,4)*f_pui_max/PUI_flux;
+//   double PUI_flux_normalized = integral_flux(Vd, 0.01, 0.01)/speed_cdf(1)/pow(Vc, 3);
+  // double r = 33.5;
+  // double alpha_PUI = 1.4;
+  // double Vc = 10.07;
+  // double PUI_flux = integral_flux(Vd, 0.01, 0.01);
+  
+  
+  // Determine which domains area along the boundaries - Use macro from
+  // grid/partition.c.
+
+# define RANK_TO_INDEX(rank,ix,iy,iz) BEGIN_PRIMITIVE {                 \
+    int _ix, _iy, _iz;                                                  \
+    _ix  = (rank);                /* ix = ix+gpx*( iy+gpy*iz ) */       \
+    _iy  = _ix/int(topology_x);   /* iy = iy+gpy*iz */                  \
+    _ix -= _iy*int(topology_x);   /* ix = ix */                         \
+    _iz  = _iy/int(topology_y);   /* iz = iz */                         \
+    _iy -= _iz*int(topology_y);   /* iy = iy */                         \
+    (ix) = _ix;                                                         \
+    (iy) = _iy;                                                         \
+    (iz) = _iz;                                                         \
+  } END_PRIMITIVE
+
+  int ix, iy, iz, left=0,right=0,top=0,bottom=0;
+  RANK_TO_INDEX( int(rank()), ix, iy, iz );
+  if ( ix ==0 ) left=1;
+  if ( ix ==topology_x-1 ) right=1;
+    if ( iz ==0 ) bottom=1;
+  if ( iz ==topology_z-1 ) top=1;
+
+  
+  ///////////////////////////////////////////////
+  // Setup high level simulation parameters
+  num_step             = int(taui/(wci*dt));
+  status_interval      = 150;
+  sync_shared_interval = status_interval/2;
+  clean_div_e_interval = status_interval/2;
+  clean_div_b_interval = status_interval/2;
+
+  global->restart_interval     = restart_interval;
+  global->energies_interval    = energies_interval;
+  global->fields_interval      = fields_interval;
+  global->ehydro_interval      = ehydro_interval;
+  global->Hhydro_interval      = Hhydro_interval;
+  global->eparticle_interval   = eparticle_interval;
+  global->Hparticle_interval   = Hparticle_interval;
+  global->quota_check_interval = quota_check_interval;
+  global->quota_sec            = quota_sec;
+  global->rtoggle              = 0;
+  global->restart_step         = 0;
+  global->b0  = b0;
+  global->bg = bg;
+  global->v_A  = v_A;
+
+  global->nsp = 2;
+  global->ur  = Vd;
+  global->ul  = 0.0;
+  global->q[0]  = qi;
+  global->q[1]  = qi;
+  //global->q[2]  = qi;
+  // global->npleft[0]  = n0;
+  // global->npleft[1]  = n0/N_i2N_alpha;
+  // //global->npleft[2]  = n0/N_i2N_pui;
+  // global->npright[0]  = n0;
+  // global->npright[1]  = n0/N_i2N_alpha;
+  //global->npright[2]  = n0/N_i2N_pui;
+  global->vth[0]  = sqrt(2.)*vthi;
+  global->vth[1]  = sqrt(2.)*vthi;
+  //global->vth[2]  = sqrt(2.)*vthi;
+  global->n_inject[0]=0;
+  global->n_inject[1]=0;
+  global->n_inject[2]=0;
+  global->ratio[0] = ratio_core;
+  global->ratio[1] = 1-ratio_core;
+  global->left = left;
+  global->right = right;
+  global->top = top;
+  global->bottom = bottom;
+  global->nfac = nfac;
+  global->sn = sn;
+  global->edrive  = edrive;
+  global->tdrive  = tdrive;
+  global->topology_x  = topology_x;
+  global->topology_y  = topology_y;
+  global->topology_z  = topology_z;
+  // particle tracking
+  global->particle_tracing      = particle_tracing;
+  global->tracer_interval       = tracer_interval;
+  global->tracer_file_interval  = nframes_per_tracer_file * tracer_interval;
+  global->tracer_pass1_interval = tracer_pass1_interval;
+  global->tracer_pass2_interval = tracer_pass2_interval;
+  global->Ntracer = int(Ntracer);
+  global->dump_traj_directly = dump_traj_directly;
+  global->emf_at_tracer   = emf_at_tracer;
+  global->hydro_at_tracer = hydro_at_tracer;
+  global->ve_at_tracer = ve_at_tracer;
+  global->num_tracer_fields_add = num_emf + num_hydro;
+  global->particle_select = particle_select;
+  global->i_particle_select = i_particle_select;
+  global->alpha_particle_select = alpha_particle_select;
+  global->pui_particle_select = pui_particle_select;
+  // particle dump
+  global->stride_particle_dump = stride_particle_dump;
+  global->rin[0]  = rin[0];
+  global->rin[1]  = rin[1];
+  global->rin[2]  = rin[2];
+  global->rout[0]  = rout[0];
+  global->rout[1]  = rout[1];
+  global->rout[2]  = rout[2];
+  global->nb=n_back;
+  global->n_0 = n_0;
+  global->L = L;
+  global->uf[0] = vdri;
+  global->uf[1] = vdri;
+  global->ux_inject[0] = -v_beam_drift*(1-ratio_core);
+  global->ux_inject[1] = v_beam_drift*(ratio_core);
+
+  global->vth[0]  = sqrt(2)*vthi;
+  global->vth[1]  = sqrt(2)*vthi;
+  global->vthb[0]  = sqrt(2)*vthi;
+  global->vthb[1]  = sqrt(2)*vthi;
+//   global->M = M;
+//   global->PUI_flux = PUI_flux;
+//   global->PUI_flux_normalized = PUI_flux_normalized;
+  
+  // global->alpha_PUI = alpha_PUI;
+  // global->r = r;
+  // global->Vc = Vc;
+ 
+  //////////////////////////////////////////////////////////////////////////////
+  // Setup the grid
+
+  // Setup basic grid parameters
+  define_units(1.0, 1.0);//c, eps0 );
+  define_timestep( dt );
+
+  // Define the grid
+  define_periodic_grid(  0,  -0.5*Ly, -0.5*Lz,    // Low corner
+                         Lx,  0.5*Ly,  0.5*Lz,     // High corner
+                         nx, ny, nz,             // Resolution
+                         topology_x, topology_y, topology_z); // Topology
+
+  grid->te = Te;
+  grid->den = 1.0;
+  grid->eta = eta;
+  grid->hypereta = hypereta;
+  if (right) grid->hypereta=0.02;
+  grid->gamma = gamma;
+
+  grid->nsub = 1;
+  grid->nsm= 2;
+  grid->nsmb=200;
+
+
+  // ***** Set Field Boundary Conditions *****
+
+  sim_log("Reflecting fields + particles on left X");
+//   if ( iz==0 )
+//   set_domain_field_bc( BOUNDARY(0,0,-1), pec_fields );
+// if ( iz==topology_z-1 )
+//  set_domain_field_bc( BOUNDARY( 0,0,1), pec_fields );
+
+// // ***** Set Particle Boundary Conditions *****
+// if ( iz==0 )    set_domain_particle_bc( BOUNDARY(0,0,-1), reflect_particles );
+// if ( iz==topology_z-1 ) set_domain_particle_bc( BOUNDARY(0,0,1), reflect_particles );
+  if ( ix==0 )
+    set_domain_field_bc( BOUNDARY(-1,0,0), absorb_fields );
+  if ( ix==topology_x-1 )
+    set_domain_field_bc( BOUNDARY( 1,0,0), absorb_fields );
+
+  sim_log("Conducting fields on X & Z-boundaries");
+  if ( iz==0 )            set_domain_field_bc( BOUNDARY(0,0,-1), pec_fields );
+  if ( iz==topology_z-1 ) set_domain_field_bc( BOUNDARY( 0,0,1), pec_fields );
+  //if ( ix==0 )            set_domain_field_bc( BOUNDARY(-1,0,0), pec_fields );
+  //if ( ix==topology_x-1 ) set_domain_field_bc( BOUNDARY( 1,0,0), pec_fields );
+
+  // ***** Set Particle Boundary Conditions *****
+
+  sim_log("Absorb particles on X & Z-boundaries");
+  if ( iz==0 )
+    set_domain_particle_bc( BOUNDARY(0,0,-1), absorb_particles );
+  if ( iz==topology_z-1 )
+    set_domain_particle_bc( BOUNDARY(0,0,1), absorb_particles );
+  if ( ix==0 )
+    set_domain_particle_bc( BOUNDARY(-1,0,0), absorb_particles );
+  if ( ix==topology_x-1 )
+    set_domain_particle_bc( BOUNDARY(1,0,0), absorb_particles );
+ 
+  //////////////////////////////////////////////////////////////////////////////
+  // Setup materials
+  sim_log("Setting up materials. ");
+  define_material( "vacuum", 1 );
+
+  material_t * layer = define_material("layer",   1.0,10.0,1.0,
+				                  1.0,1.0, 1.0,
+				                  0.0,0.0, 0.0);
+  
+  //////////////////////////////////////////////////////////////////////////////                                                                                                                                                                                                       // Finalize Field Advance
+  define_field_array(NULL); // second argument is damp, default to 0
+
+  // Define resistive layer surrounding boundary --> set thickness=0                                                                                                                
+  // to eliminate this feature. Second number multiplies hypereta                                                                                                                   
+  double thickness = 10;
+#define INSIDE_LAYER ( (x < hx*thickness) || (x > Lx-hx*thickness))
+
+  if (thickness > 0)  set_region_material(INSIDE_LAYER, layer, layer);
+
+  sim_log("Finalized Field Advance");
+
+  
+  //////////////////////////////////////////////////////////////////////////////
+  // Setup the species
+  sim_log("Setting up species. ");
+  double nmax = 20.0*Ni/nproc();
+  double nmovers = 0.5*nmax;
+  double sort_method = 1;   // 0=in place and 1=out of place
+  species_t *ion_c = define_species("ion_c", ec, mi, nmax, nmovers, sort_interval, sort_method);
+  species_t *ion_b = define_species("ion_b", ec, mi, nmax, nmovers, sort_interval, sort_method);
+  species_t *tracer_c = define_species("ion_c_tracer", ec, mi, nmax, nmovers, sort_interval, sort_method);
+  species_t *tracer_b = define_species("ion_b_tracer", ec, mi, nmax, nmovers, sort_interval, sort_method);
+  hijack_tracers(2);
+  // pui->max_np = ion->max_np;
+  //pui->id = num_species(species_list);
+ // pui->next = *species_list;
+  //*species_list = pui->next;
+  //species_list = append_species(pui, *species_list);
+ // sim_log(pui->np<<pui->max_np);
+  //sim_log(ion->np<<ion->max_np);
+   sim_log(num_species(species_list));
+  // species_t *electron = define_species("electron", -ec, me, nmax_pui, nmovers_pui, sort_interval, sort_method);
+  
+  ///////////////////////////////////////////////////
+  // Log diagnostic information about this simulation
+
+  sim_log( "***********************************************" );
+  sim_log("* Topology:                       " << topology_x
+    << " " << topology_y << " " << topology_z);
+  sim_log ( "Vd/Va = " << Vd_Va ) ;
+  sim_log ( "beta_i = " << beta_i );
+  sim_log ( "theta = " << theta );
+  sim_log ( "Ti/Te = " << Ti_Te );
+  sim_log ( "taui = " << taui );
+  sim_log ( "num_step = " << num_step );
+  sim_log ( "Lx/di = " << Lx/di );
+  sim_log ( "Ly/di = " << Ly/di );
+  sim_log ( "Lz/di = " << Lz/di );
+  sim_log ( "nx = " << nx );
+  sim_log ( "ny = " << ny );
+  sim_log ( "nz = " << nz );
+  sim_log ( "nproc = " << nproc ()  );
+  sim_log ( "nppc = " << nppc );
+  sim_log ( "b0 = " << b0 );
+  sim_log ( "v_A = " << v_A );
+  sim_log ( "di = " << di );
+  sim_log ( "Ni = " << Ni );
+  sim_log ( "total # of particles = " << Ni );
+  sim_log ( "dt*wci = " << wci*dt );
+  sim_log ( "energies_interval: " << energies_interval );
+  sim_log ( "dx/di = " << Lx/(di*nx) );
+  sim_log ( "dy/di = " << Ly/(di*ny) );
+  sim_log ( "dz/di = " << Lz/(di*nz) );
+  sim_log ( "dx/rhoi = " << (Lx/nx)/(vthi/wci)  );
+  sim_log ( "n0 = " << n0 );
+  sim_log ( "v_beam_drift = " << v_beam_drift );
+  sim_log ( "ratio_core = " << ratio_core );
+
+  //sim_log ("Vc = " << Vc);
+
+
+ // Dump simulation information to file "info.bin" for translate script
+  if (rank() == 0 ) {
+
+    FileIO fp_info;
+
+    // write binary info file
+
+    if ( ! (fp_info.open("info.bin", io_write)==ok) ) ERROR(("Cannot open file."));
+    
+    fp_info.write(&topology_x, 1 );
+    fp_info.write(&topology_y, 1 );
+    fp_info.write(&topology_z, 1 );
+
+    fp_info.write(&Lx, 1 );
+    fp_info.write(&Ly, 1 );
+    fp_info.write(&Lz, 1 );
+
+    fp_info.write(&nx, 1 );
+    fp_info.write(&ny, 1 );
+    fp_info.write(&nz, 1 );
+
+    fp_info.write(&dt, 1 );
+
+    fp_info.write(&status_interval, 1 );
+    fp_info.close();
+
+}
+
+
+  ////////////////////////////
+  // Load fields
+
+sim_log( "Loading fields" );
+//#define DBX (dbx*cos(2.0*M_PI*(x-0.5*Lx)/Lpert)*sin(M_PI*z/Lz))
+#define DBX (dbx*cos(2.0*M_PI*(x-0.5*Lx)/Lpert)*sin(M_PI*z/Lz))
+//#define DBZ (dbz*cos(M_PI*z/Lz)*sin(2.0*M_PI*(x-0.5*Lx)/Lpert))
+#define DBZ (dbz*cos(M_PI*z/Lz)*sin(2.0*M_PI*(x-0.5*Lx)/Lpert))
+#define BX (b0*tanh(z/L))
+#define BY sqrt(b0*b0 + bg*bg*b0*b0 - BX*BX)
+#define UDY (Ti*(b0/L)/(cosh(z/L)*cosh(z/L))/n(z)/(Ti+Te))
+// Note: everywhere is a region that encompasses the entire simulation                                                                                                                   
+// In general, regions are specied as logical equations (i.e. x>0 && x+y<2) 
+  set_region_field( everywhere, 0, 0, 0,
+		    (BX+DBX)*cs+0*BY*sn, -BX*sn+0*BY*cs, DBZ ); // Magnetic field
+
+
+ 
+ 
+
+ // LOAD PARTICLES
+
+
+  sim_log( "Loading particles" );
+
+  // Do a fast load of the particles
+  int rng_seed     = 1;     // Random number seed increment 
+  seed_entropy( rank() );  //Generators desynchronized
+  double xmin = grid->x0 , xmax = grid->x0+(grid->dx)*(grid->nx);
+  double ymin = grid->y0 , ymax = grid->y0+(grid->dy)*(grid->ny);
+  double zmin = grid->z0 , zmax = grid->z0+(grid->dz)*(grid->nz);
+  double nnode = n_0*abs(tanh(zmax/L)-tanh(zmin/L))*(ymax-ymin)*(xmax-xmin)*L+n_back*(zmax-zmin)*(ymax-ymin)*(xmax-xmin);
+  
+//   for ( int i=0; i < grid->nx; i++ ) {
+//     for ( int j=0; j< grid->nz; j++ ) {
+//         double  xx = xmin + (grid->dx)*(i)+(grid->dx)/2.0;
+//         double  zz = zmin + (grid->dz)*(j)+(grid->dz)/2.0;
+//         nnode = nnode + hx*hz*n(zz);
+//     }
+// }
+
+  std::cout<<rank()<<", xmin= "<<xmin<<"  xmax= "<<xmax<<"  zmin= "<<zmin<<"  zmax= "<<zmax<<"nx= "<<grid->nx<<", nnode="<<nnode<<std::endl;
+  double nlocal_c = Ni_c*nnode/Np;
+  double nlocal_b = Ni_b*nnode/Np;
+  int num_ion_c = 0;
+  int num_ion_b = 0;
+  int num_tracer_c = 0;
+  int num_tracer_b = 0;
+  //std::cout<<"Ni="<<Ni<<", nnode="<<nnode<<", nsheet="<<nsheet<<", nlocal_c = "<< nlocal_c << std::endl;
+  repeat ( nlocal_c ) {
+     double x, y, z, ux, uy, uz, d0 ;
+    // 定义提议分布函数（这里简单假设为均匀分布）
+    double f_max = n_back + n_0; // 提议分布的上限
+    double test;
+    // 使用拒绝方法来加载粒子位置
+    do {
+        z = uniform(rng(0), zmin, zmax);
+        
+        test = uniform(rng(0), 0, 1);
+    } while( f_max * test > n(z) );
+     x = uniform(rng(0),xmin,xmax);
+     y = uniform(rng(0),ymin,ymax);
+     //z = uniform(rng(0),zmin,zmax);
+     
+     ux = normal( rng(0), 0, vthi_c)-v_beam_drift*(1-ratio_core);
+     uy = normal( rng(0), 0, vthi_c)+1*UDY;
+     uz = normal( rng(0), 0, vthi_c);
+    //  ux = generateRandom(0,-v_beam_drift,0.5,1.25/2);
+    //  uy = generateRandom(0,0,0.5,1.25/2);
+    //  uz = generateRandom(0,0,0.5,1.25/2);
+
+     inject_particle( ion_c, x, y, z, ux, uy, uz, qi, 0, 0);
+     num_ion_c++;
+     if (particle_tracing == 1) { // only tag particles in the 1st pass
+      if (num_ion_c%particle_select == 0) {
+        num_tracer_c++;
+        //int tag = ((((int)rank())<<19) | (num_tracer_c & 0x7ffff)); // 13 bits (8192) for rank and 19 bits (~520k) */
+        int32_t tag = ((((int)rank())<<22) | (num_tracer_c & 0x3FFFFF));
+        /*int tag = ((((int)rank())<<13) | (num_tracer_c & 0x1fff)); // 19 bits (520k) for rank and 13 bits (8192)*/
+        //tag_tracer( (electron->p + electron->np-1), e_tracer, tag );
+        tag_tracer( (ion_c->p      + ion_c->np-1),     tracer_c, tag );
+      }
+    }
+
+   }
+   repeat ( nlocal_b ) {
+    double x, y, z, ux, uy, uz, d0 ;
+    double test;
+    // 定义提议分布函数（这里简单假设为均匀分布）
+    double f_max = n_back + n_0; // 提议分布的上限
+
+    // 使用拒绝方法来加载粒子位置
+    do {
+        z = uniform(rng(0), zmin, zmax);
+        //x = uniform(rng(0), xmin, xmax);
+        test = uniform(rng(0), 0, 1);
+    } while( f_max * test > n(z) );
+     x = uniform(rng(0),xmin,xmax);
+     y = uniform(rng(0),ymin,ymax);
+     //z = uniform(rng(0),zmin,zmax);
+    
+    ux = normal( rng(0), 0, vthi_b)+v_beam_drift*ratio_core;
+    uy = normal( rng(0), 0, vthi_b)+1*UDY;
+    uz = normal( rng(0), 0, vthi_b);
+   //  ux = generateRandom(0,-v_beam_drift,0.5,1.25/2);
+   //  uy = generateRandom(0,0,0.5,1.25/2);
+   //  uz = generateRandom(0,0,0.5,1.25/2);
+
+    inject_particle( ion_b, x, y, z, ux, uy, uz, qi, 0, 0);
+    num_ion_b++;
+    if (particle_tracing == 1) { // only tag particles in the 1st pass
+      if (num_ion_b%particle_select == 0) {
+        num_tracer_b++;
+        //int tag = ((((int)rank())<<19) | (num_tracer_b & 0x7ffff)); // 13 bits (8192) for rank and 19 bits (~520k)*/ 
+        int32_t tag = ((((int)rank())<<22) | (num_tracer_b & 0x3FFFFF));
+        /*int tag = ((((int)rank())<<13) | (num_tracer_b & 0x1fff)); // 19 bits (520k) for rank and 13 bits (8192)*/
+        //tag_tracer( (electron->p + electron->np-1), e_tracer, tag );
+        tag_tracer( (ion_b->p      + ion_b->np-1),      tracer_b, tag );
+      }
+    }
+
+  }
+  //hijack_tracers(2);
+  sim_log( "Finished loading particles" );
+
+  /*--------------------------------------------------------------------------
+   * New dump definition
+   *------------------------------------------------------------------------*/
+
+  /*--------------------------------------------------------------------------
+   * Set data output format
+   *
+   * This option allows the user to specify the data format for an output
+   * dump.  Legal settings are 'band' and 'band_interleave'.  Band-interleave
+   * format is the native storage format for data in VPIC.  For field data,
+   * this looks something like:
+   *
+   *   ex0 ey0 ez0 div_e_err0 cbx0 ... ex1 ey1 ez1 div_e_err1 cbx1 ...
+   *
+   * Banded data format stores all data of a particular state variable as a
+   * contiguous array, and is easier for ParaView to process efficiently.
+   * Banded data looks like:
+   *
+   *   ex0 ex1 ex2 ... exN ey0 ey1 ey2 ...
+   *
+   *------------------------------------------------------------------------*/
+
+  global->fdParams.format = band;
+  sim_log ( "Fields output format = band" );
+
+  //  global->hedParams.format = band;
+  //  sim_log ( "Electron species output format = band" );
+
+  global->hHdParams_c.format = band;
+  global->hHdParams_b.format = band;
+  sim_log ( "Ion species output format = band" );
+
+  /*--------------------------------------------------------------------------
+   * Set stride
+   *
+   * This option allows data down-sampling at output.  Data are down-sampled
+   * in each dimension by the stride specified for that dimension.  For
+   * example, to down-sample the x-dimension of the field data by a factor
+   * of 2, i.e., half as many data will be output, select:
+   *
+   *   global->fdParams.stride_x = 2;
+   *
+   * The following 2-D example shows down-sampling of a 7x7 grid (nx = 7,
+   * ny = 7.  With ghost-cell padding the actual extents of the grid are 9x9.
+   * Setting the strides in x and y to equal 2 results in an output grid of
+   * nx = 4, ny = 4, with actual extents 6x6.
+   *
+   * G G G G G G G G G
+   * G X X X X X X X G
+   * G X X X X X X X G         G G G G G G
+   * G X X X X X X X G         G X X X X G
+   * G X X X X X X X G   ==>   G X X X X G
+   * G X X X X X X X G         G X X X X G
+   * G X X X X X X X G         G X X X X G
+   * G X X X X X X X G         G G G G G G
+   * G G G G G G G G G
+   *
+   * Note that grid extents in each dimension must be evenly divisible by
+   * the stride for that dimension:
+   *
+   *   nx = 150;
+   *   global->fdParams.stride_x = 10; // legal -> 150/10 = 15
+   *
+   *   global->fdParams.stride_x = 8; // illegal!!! -> 150/8 = 18.75
+   *------------------------------------------------------------------------*/
+
+  //  // relative path to fields data from global header
+  //  sprintf(global->fdParams.baseDir, "fields");
+  //  // base file name for fields output
+  //  sprintf(global->fdParams.baseFileName, "fields");
+   sprintf(global->fdParams.baseDir, "fields/");
+   dump_mkdir("fields");
+   dump_mkdir(global->fdParams.baseDir);
+   // base file name for fields output
+   sprintf(global->fdParams.baseFileName, "fields");
+
+  global->fdParams.stride_x = 1;
+  global->fdParams.stride_y = 1;
+  global->fdParams.stride_z = 1;
+
+  // add field parameters to list
+  global->outputParams.push_back(&global->fdParams);
+
+  sim_log ( "Fields x-stride " << global->fdParams.stride_x );
+  sim_log ( "Fields y-stride " << global->fdParams.stride_y );
+  sim_log ( "Fields z-stride " << global->fdParams.stride_z );
+
+  //  // relative path to electron species data from global header
+  //sprintf(global->hedParams.baseDir, "hydro");
+  //
+
+  //  // relative path to electron species data from global header
+  sprintf(global->hHdParams_c.baseDir, "hydro");
+  sprintf(global->hHdParams_b.baseDir, "hydro");
+  //sprintf(global->hHdParams.baseDir, "hydro/%d",NUMFOLD);
+  dump_mkdir("hydro");
+  dump_mkdir(global->hHdParams_c.baseDir);
+  //dump_mkdir(global->hHdParams_b.baseDir);
+  //// base file name for fields output
+  //sprintf(global->hHdParams.baseFileName, "Hhydro");
+
+  // base file name for fields output
+  sprintf(global->hHdParams_c.baseFileName, "Hhydro_c");
+  sprintf(global->hHdParams_b.baseFileName, "Hhydro_b");
+
+  global->hHdParams_c.stride_x = 1;
+  global->hHdParams_c.stride_y = 1;
+  global->hHdParams_c.stride_z = 1;
+  global->hHdParams_b.stride_x = 1;
+  global->hHdParams_b.stride_y = 1;
+  global->hHdParams_b.stride_z = 1;
+
+  sim_log ( "Ion species x-stride " << global->hHdParams_c.stride_x );
+  sim_log ( "Ion species y-stride " << global->hHdParams_c.stride_y );
+  sim_log ( "Ion species z-stride " << global->hHdParams_c.stride_z );
+
+  // add electron species parameters to list
+  global->outputParams.push_back(&global->hHdParams_c);
+  global->outputParams.push_back(&global->hHdParams_b);
+
+  /*--------------------------------------------------------------------------
+   * Set output fields
+   *
+   * It is now possible to select which state-variables are output on a
+   * per-dump basis.  Variables are selected by passing an or-list of
+   * state-variables by name.  For example, to only output the x-component
+   * of the electric field and the y-component of the magnetic field, the
+   * user would call output_variables like:
+   *
+   *   global->fdParams.output_variables( ex | cby );
+   *
+   * NOTE: OUTPUT VARIABLES ARE ONLY USED FOR THE BANDED FORMAT.  IF THE
+   * FORMAT IS BAND-INTERLEAVE, ALL VARIABLES ARE OUTPUT AND CALLS TO
+   * 'output_variables' WILL HAVE NO EFFECT.
+   *
+   * ALSO: DEFAULT OUTPUT IS NONE!  THIS IS DUE TO THE WAY THAT VPIC
+   * HANDLES GLOBAL VARIABLES IN THE INPUT DECK AND IS UNAVOIDABLE.
+   *
+   * For convenience, the output variable 'all' is defined:
+   *
+   *   global->fdParams.output_variables( all );
+   *------------------------------------------------------------------------*/
+  /* CUT AND PASTE AS A STARTING POINT
+   * REMEMBER TO ADD APPROPRIATE GLOBAL DUMPPARAMETERS VARIABLE
+
+   output_variables( all );
+
+   output_variables( electric | div_e_err | magnetic | div_b_err |
+                     tca      | rhob      | current  | rhof |
+                     emat     | nmat      | fmat     | cmat );
+
+   output_variables( current_density  | charge_density |
+                     momentum_density | ke_density     | stress_tensor );
+   */
+
+  //global->fdParams.output_variables( electric | magnetic );
+  //  global->hedParams.output_variables( current_density | charge_density | stress_tensor );
+  global->hHdParams_c.output_variables( current_density | charge_density | stress_tensor );
+  global->hHdParams_b.output_variables( current_density | charge_density | stress_tensor );
+
+
+  global->fdParams.output_variables( all );
+// global->hedParams.output_variables( all );
+// global->hHdParams.output_variables( all );
+
+  /*--------------------------------------------------------------------------
+   * Convenience functions for simlog output
+   *------------------------------------------------------------------------*/
+
+  char varlist[512];
+  create_field_list(varlist, global->fdParams);
+
+  sim_log ( "Fields variable list: " << varlist );
+
+  //create_hydro_list(varlist, global->hedParams);
+
+  //sim_log ( "Electron species variable list: " << varlist );
+
+  create_hydro_list(varlist, global->hHdParams_c);
+  create_hydro_list(varlist, global->hHdParams_b);
+
+  sim_log ( "Ion species variable list: " << varlist );
+
+  sim_log("*** Finished with user-specified initialization ***");
+
+  // Upon completion of the initialization, the following occurs:
+  // - The synchronization error (tang E, norm B) is computed between domains
+  //   and tang E / norm B are synchronized by averaging where discrepancies
+  //   are encountered.
+  // - The initial divergence error of the magnetic field is computed and
+  //   one pass of cleaning is done (for good measure)
+  // - The bound charge density necessary to give the simulation an initially
+  //   clean divergence e is computed.
+  // - The particle momentum is uncentered from u_0 to u_{-1/2}
+  // - The user diagnostics are called on the initial state
+  // - The physics loop is started
+  //
+  // The physics loop consists of:
+  // - Advance particles from x_0,u_{-1/2} to x_1,u_{1/2}
+  // - User particle injection at x_{1-age}, u_{1/2} (use inject_particles)
+  // - User current injection (adjust field(x,y,z).jfx, jfy, jfz)
+  // - Advance B from B_0 to B_{1/2}
+  // - Advance E from E_0 to E_1
+  // - User field injection to E_1 (adjust field(x,y,z).ex,ey,ez,cbx,cby,cbz)
+  // - Advance B from B_{1/2} to B_1
+  // - (periodically) Divergence clean electric field
+  // - (periodically) Divergence clean magnetic field
+  // - (periodically) Synchronize shared tang e and norm b
+  // - Increment the time step
+  // - Call user diagnostics
+  // - (periodically) Print a status message
+
+} //begin_initialization
+
+#define should_dump(x)                                                  \
+  (global->x##_interval>0 && remainder(step(), global->x##_interval) == 0)
+
+begin_diagnostics {
+
+  /*--------------------------------------------------------------------------
+   * NOTE: YOU CANNOT DIRECTLY USE C FILE DESCRIPTORS OR SYSTEM CALLS ANYMORE
+   *
+   * To create a new directory, use:
+   *
+   *   dump_mkdir("full-path-to-directory/directoryname")
+   *
+   * To open a file, use: FileIO class
+   *
+   * Example for file creation and use:
+   *
+   *   // declare file and open for writing
+   *   // possible modes are: io_write, io_read, io_append,
+   *   // io_read_write, io_write_read, io_append_read
+   *   FileIO fileIO;
+   *   FileIOStatus status;
+   *   status= fileIO.open("full-path-to-file/filename", io_write);
+   *
+   *   // formatted ASCII  output
+   *   fileIO.print("format string", varg1, varg2, ...);
+   *
+   *   // binary output
+   *   // Write n elements from array data to file.
+   *   // T is the type, e.g., if T=double
+   *   // fileIO.write(double * data, size_t n);
+   *   // All basic types are supported.
+   *   fileIO.write(T * data, size_t n);
+   *
+   *   // close file
+   *   fileIO.close();
+   *------------------------------------------------------------------------*/
+
+  /*--------------------------------------------------------------------------
+   * Data output directories
+   * WARNING: The directory list passed to "global_header" must be
+   * consistent with the actual directories where fields and species are
+   * output using "field_dump" and "hydro_dump".
+   *
+   * DIRECTORY PATHES SHOULD BE RELATIVE TO
+   * THE LOCATION OF THE GLOBAL HEADER!!!
+   *------------------------------------------------------------------------*/
+
+  // Adam: Can override some global params here
+  // num_step = 171000;
+  //global->fields_interval = 1358;
+  //global->ehydro_interval = 1358;
+  //global->Hhydro_interval = 1358;
+
+  global->restart_interval = 30000000;
+  global->quota_sec = 23.5*3600.0;
+
+  //  const int nsp=global->nsp;
+  const int nx=grid->nx;
+  const int ny=grid->ny;
+  const int nz=grid->nz;
+
+  /*--------------------------------------------------------------------------
+   * Normal rundata dump
+   *------------------------------------------------------------------------*/
+  if(step()==0) {
+    dump_mkdir("fields");
+    dump_mkdir("hydro");
+    dump_mkdir("rundata");
+    dump_mkdir("injectors");
+    dump_mkdir("restore0");
+    dump_mkdir("restore1");  // 1st backup
+    dump_mkdir("particle");
+    dump_mkdir("rundata");
+    dump_mkdir("tracer");
+    dump_mkdir("tracer/tracer1");
+    dump_mkdir("tracer/tracer2");
+    dump_mkdir("tracer/traj1");
+    dump_mkdir("tracer/traj2");
+
+    
+    // Make subfolders for restart
+    //    char restorefold[128];
+    //sprintf(restorefold, "restore0/%i", NUMFOLD);
+    //    sprintf(restorefold, "restore0");
+    //    dump_mkdir(restorefold);
+    //    sprintf(restorefold, "restore1/%i", NUMFOLD);
+    //    sprintf(restorefold, "restore1");
+    //    dump_mkdir(restorefold);
+    //    sprintf(restorefold, "restore2/%i", NUMFOLD);
+    //    dump_mkdir(restorefold);
+
+    // And rundata 
+    //    char rundatafold[128];
+    //    char rundatafile[128];
+    //    sprintf(rundatafold, "rundata/%i", NUMFOLD);
+    ///    sprintf(rundatafold, "rundata");
+    //    dump_mkdir(rundatafold);
+
+    dump_grid("rundata/grid");
+    //    sprintf(rundatafile, "rundata/%i/grid", NUMFOLD);
+    //    dump_grid(rundatafile);
+
+    dump_materials("rundata/materials");
+    dump_species("rundata/species");
+    global_header("global", global->outputParams);
+  } // if
+
+  /*--------------------------------------------------------------------------
+   * Normal rundata energies dump
+   *------------------------------------------------------------------------*/
+  if(should_dump(energies)) {
+    dump_energies("rundata/energies", step() == 0 ? 0 : 1);
+  } // if
+
+  /*--------------------------------------------------------------------------
+   * Field data output
+   *------------------------------------------------------------------------*/
+
+  if(step() == 1 || should_dump(fields)) field_dump(global->fdParams);
+
+  /*--------------------------------------------------------------------------
+   * Electron species output
+   *------------------------------------------------------------------------*/
+
+  //if(should_dump(ehydro)) hydro_dump("electron", global->hedParams);
+
+  /*--------------------------------------------------------------------------
+   * Ion species output
+   *------------------------------------------------------------------------*/
+
+  if(should_dump(Hhydro)) {hydro_dump("ion_c", global->hHdParams_c);
+    hydro_dump("ion_b", global->hHdParams_b);}
+
+  /*--------------------------------------------------------------------------
+  * Time averaging
+  *------------------------------------------------------------------------*/
+
+  //  #include "time_average.cxx"
+   //#include "time_average_cori.cxx"
+
+  /*--------------------------------------------------------------------------
+   * Restart dump
+   *------------------------------------------------------------------------*/
+
+  int nsp = global->nsp;
+  
+  if(step() && !(step()%global->restart_interval)) {
+    global->write_restart = 1; // set restart flag. the actual restart files are written during the next step
+  } else {
+    if (global->write_restart) {
+
+      global->write_restart = 0; // reset restart flag
+      double dumpstart = uptime();
+      if(!global->rtoggle) {
+        global->rtoggle = 1;
+        //      BEGIN_TURNSTILE(NUM_TURNSTILES) {
+	checkpt("restore1/restore", 0);
+	//DUMP_INJECTORS(1);
+	//    } END_TURNSTILE;
+      } else {
+        global->rtoggle = 0;
+        //      BEGIN_TURNSTILE(NUM_TURNSTILES) {
+	checkpt("restore0/restore", 0);
+	//DUMP_INJECTORS(0);
+	//    } END_TURNSTILE;
+      } // if
+
+      //    mp_barrier();
+      sim_log( "Restart dump completed");
+      double dumpelapsed = uptime() - dumpstart;
+      sim_log("Restart duration "<<dumpelapsed);
+    } // if global->write_restart
+  }
+
+    // Dump particle data
+    char subdir[36];
+    char subdir_c[36];
+    char subdir_b[36];
+    if ( should_dump(Hparticle) ) {
+      sprintf(subdir_c,"particle/T.%ld/Hparticle_c",step());
+      sprintf(subdir_b,"particle/T.%ld/Hparticle_b",step());
+      sprintf(subdir,"particle/T.%ld/",step());
+      dump_mkdir(subdir);
+      dump_particles("ion_c", subdir_c);
+      dump_particles("ion_b", subdir_b);
+      }
+     /*--------------------------------------------------------------------------
+   * particle tracking
+   * -----------------------------------------------------------------------*/
+//tag{last start comment}
+  // Set TRACER_ACCUM_HYDRO to 1 if we need to accumulate hydro moments before
+  // writing trajectory output. Since this involves a pass through all the particles
+  // in the system as well as synchronization (which hits MPI), don't do this step
+  // unless we must.
+
+#undef  TRACER_DO_ACCUM_HYDRO
+#define TRACER_DO_ACCUM_HYDRO (0)       //CHANGE BETWEEN PASSES
+
+//  // Setup data needed for hydro output
+//# ifdef TRACER_DO_ACCUM_HYDRO
+//    TRACER_HYDRO_SETUP( e, "electron" )
+//    TRACER_HYDRO_SETUP( H, "H"       )
+//# endif
+
+  // Be careful! This number should be set correctly
+#undef  TRACER_NUM_ADDED_FIELDS
+#define TRACER_NUM_ADDED_FIELDS (11)       //CHANGE BETWEEN PASSES
+
+#undef CALC_TRACER_USER_DEFINED_DATA
+#define CALC_TRACER_USER_DEFINED_DATA                           \
+  if ( global->emf_at_tracer ) {                                \
+    CALC_EMFS_AT_TRACER;                                        \
+  }                                                             \
+  if ( global->hydro_at_tracer ) {                              \
+      CALC_HYDRO_FIELDS_AT_TRACER;                              \
+  }
+
+  // We assume hydro fields are alway behind electric and magnetic fields
+#undef TRACER_USER_DEFINED_DATA
+#define TRACER_USER_DEFINED_DATA                                \
+  if ( global->emf_at_tracer ) {                                \
+    pout[index + 6 + 1]  = ex;                                  \
+    pout[index + 6 + 2]  = ey;                                  \
+    pout[index + 6 + 3]  = ez;                                  \
+    pout[index + 6 + 4]  = bx;                                  \
+    pout[index + 6 + 5]  = by;                                  \
+    pout[index + 6 + 6]  = bz;                                  \
+    if ( global->hydro_at_tracer ) {                            \
+      pout[index + 12 + 1] = vx;                                \
+      pout[index + 12 + 2] = vy;                                \
+      pout[index + 12 + 3] = vz;                                \
+      pout[index + 12 + 4] = ne;                                \
+      pout[index + 12 + 5] = ni;                                \
+      if ( global->ve_at_tracer ) {                             \
+        pout[index + 12 + 6] = vex;                             \
+        pout[index + 12 + 7] = vey;                             \
+        pout[index + 12 + 8] = vez;                             \
+      }                                                         \
+    }                                                           \
+  } else {                                                      \
+    if ( global->hydro_at_tracer ) {                            \
+      pout[index + 6 + 1] = vx;                                 \
+      pout[index + 6 + 2] = vy;                                 \
+      pout[index + 6 + 3] = vz;                                 \
+      pout[index + 6 + 4] = ne;                                 \
+      pout[index + 6 + 5] = ni;                                 \
+      if ( global->ve_at_tracer ) {                             \
+        pout[index + 6 + 6] = vex;                              \
+        pout[index + 6 + 7] = vey;                              \
+        pout[index + 6 + 8] = vez;                              \
+      }                                                         \
+    }                                                           \
+  }
+
+  // Hydro fields at tracer positions
+  static hydro_array_t * hydro_tot_array;
+  static hydro_t * ALIGNED(128) htot;
+  static hydro_t * ALIGNED(128) hi;
+  static hydro_t * RESTRICT ALIGNED(16) htot0;
+  static hydro_t * RESTRICT ALIGNED(16) h0;
+
+  int frame;
+
+  const int tracer_ratio1 = global->tracer_pass1_interval / global->tracer_interval;
+  const int tracer_ratio2 = global->tracer_pass2_interval / global->tracer_interval;
+  
+  // initialize buffered tracer data
+  if ( step() == 0 || (step()>1 && step()==global->restart_step+1) ) {
+    if ( global->particle_tracing==1 && tracer_ratio1 > 1 ) {
+      init_buffered_tracers(tracer_ratio1);
+    } else if ( global->particle_tracing==2 && tracer_ratio2 > 1 ){
+      init_buffered_tracers(tracer_ratio2);
+    }
+    if ( global->particle_tracing > 0 && (step()>1 &&
+         step()==global->restart_step+1 && (tracer_ratio1 > 1 || tracer_ratio2 > 1)) ) {
+      read_buffered_tracer_restart(global->rtoggle);
+    }
+  }
+
+  // Accumulate hydro
+  if ( global->particle_tracing > 0 && global->hydro_at_tracer ) {
+    if ( step() == 0 || (step()>1 && step()==global->restart_step+1) ) {
+      hydro_tot_array = new_hydro_array(grid);
+      UNREGISTER_OBJECT(hydro_tot_array);
+    }
+  }
+
+  if( global->particle_tracing > 0 && should_dump(tracer) ) {
+    if ( global->hydro_at_tracer ) {  // accumulate hydro at tracer positions
+      int x, y, z;
+      float rho_tot;
+      clear_hydro_array(hydro_tot_array);
+      
+      species_t *sp = find_species_name("ion", species_list);
+      clear_hydro_array(hydro_array);
+      accumulate_hydro_p(hydro_array, sp, interpolator_array);
+      synchronize_hydro_array(hydro_array);
+      htot = hydro_tot_array->h;
+      hi   = hydro_array->h;
+      for (z = 1; z <= nz + 1; z++) {
+        for (y = 1; y <= ny + 1; y++) {
+          htot0 = &HYDRO_TOT(1, y, z);
+          h0    = &HYDRO(1, y, z);
+          for (x = 1; x <= nx + 1; x++) {
+            // we use txx, tyy, and tzz as electron bulk velocity
+            if (global->ve_at_tracer && fabs(htot0->rho) > 0) {
+              htot0->txx = htot0->jx / htot0->rho;
+              htot0->tyy = htot0->jy / htot0->rho;
+              htot0->tzz = htot0->jz / htot0->rho;
+            }
+            // Assuming electron has -1 charge, ion has +1 charge
+            rho_tot = fabs(htot0->rho) + h0->rho * global->mi_me;
+            // jx, jy, jz are actually vx, vy, vz for single fluid now
+            htot0->jx = (-htot0->jx + h0->jx*global->mi_me) / rho_tot;
+            htot0->jy = (-htot0->jy + h0->jy*global->mi_me) / rho_tot;
+            htot0->jz = (-htot0->jz + h0->jz*global->mi_me) / rho_tot;
+            htot0->rho = fabs(htot0->rho); // Electron number density
+            htot0->px = h0->rho;           // Ion number density
+            htot0++;
+            h0++;
+          }
+        }
+      }
+    } // if global->hydro_at_tracer
+
+    // Buffer tracer data for latter dump
+    if (global->particle_tracing==1 && tracer_ratio1 > 1) {
+      frame = ((step() % global->tracer_pass1_interval)-1) / global->tracer_interval;
+      if (frame < 0) frame = 0;
+      buffer_tracers(tracer_ratio1, frame);
+    } else if (global->particle_tracing==2 && tracer_ratio2 > 1) {
+      frame = ((step() % global->tracer_pass2_interval)-1) / global->tracer_interval;
+      if (frame < 0) frame = 0;
+      buffer_tracers(tracer_ratio2, frame);
+    }
+
+  } // if should_dump(tracer)
+  
+  if ( global->particle_tracing==1 ) {           // First pass
+    if ( should_dump(tracer_pass1) || step() == num_step) {
+      //if ( TRACER_DO_ACCUM_HYDRO ) {
+      //  // accumulate electron hydro
+      //  TRACER_ACCUM_HYDRO( e );
+      //  // accumulate H hydro
+      //  TRACER_ACCUM_HYDRO( H );
+      //} // if
+      if (global->dump_traj_directly) {
+        //
+        dump_traj("tracer/traj1");
+        
+      } else {
+        if (tracer_ratio1 == 1) { // tracer data is not buffered
+          //dump_tracers("tracer/tracer1");
+
+#include "dumptracer_hdf5_single.cc"
+        } else {
+          dump_buffered_tracer(tracer_ratio1, "tracer/tracer1");
+          clear_buffered_tracers(tracer_ratio1);
+        }
+      }
+    } // if
+  } else if ( global->particle_tracing==2 ) {    // Second pass
+    if ( should_dump(tracer_pass2) || step() == num_step) {
+      //if ( TRACER_DO_ACCUM_HYDRO ) {
+      //  // accumulate electron hydro
+      //  TRACER_ACCUM_HYDRO( e );
+      //  // accumulate H hydro
+      //  TRACER_ACCUM_HYDRO( H );
+      //}  // if
+      if (global->dump_traj_directly) {
+        dump_traj("tracer/traj2");
+      } else {
+        if (tracer_ratio2 == 1) { // tracer data is not buffered
+          //dump_tracers("tracer/tracer2");
+
+#include "dumptracer_hdf5_single.cc"
+        } else {
+          dump_buffered_tracer(tracer_ratio2, "tracer/tracer2");
+          clear_buffered_tracers(tracer_ratio2);
+        }
+      }
+    }  // if
+  } // if global->particle_tracing
+//tag{last end comment}
+
+  /*--------------------------------------------------------------------------
+   * Normal rundata energies dump
+   *------------------------------------------------------------------------*/
+  if(should_dump(energies)) {
+    dump_energies("rundata/energies", step() == 0 ? 0 : 1);
+  } // if
+
+  /*--------------------------------------------------------------------------
+   * Field data output
+   *------------------------------------------------------------------------*/
+/*
+#ifdef DUMP_WITH_HDF5
+  field_dump_flag.disableE();
+  field_dump_flag.disableCB();
+  field_dump_flag.disableTCA();
+  field_dump_flag.disableJF();
+  field_dump_flag.disableEMAT();
+  field_dump_flag.disableFMAT();
+  field_dump_flag.ex = true;
+  field_dump_flag.ey = true;
+  field_dump_flag.ez = true;
+  field_dump_flag.cbx = true;
+  field_dump_flag.cby = true;
+  field_dump_flag.cbz = true;
+
+  if(step() == 1 || should_dump(fields)) {
+    double time_to_dump_fields = uptime();
+    dump_fields_hdf5(global->fdParams.baseDir, 0);
+    time_to_dump_fields = uptime() - time_to_dump_fields;
+    sim_log("Time in dumping fields: "<< time_to_dump_fields << " s");
+  }
+
+#else // #ifdef DUMP_WITH_HDF5
+
+  if(step() == 1 || should_dump(fields)) {
+    double time_to_dump_fields = uptime();
+    field_dump(global->fdParams);
+    time_to_dump_fields = uptime() - time_to_dump_fields;
+    sim_log("Time in dumping fields: "<< time_to_dump_fields << " s");
+  }
+
+#endif // #ifdef DUMP_WITH_HDF5
+
+
+#ifdef DUMP_WITH_HDF5
+  hydro_dump_flag.resetToDefaults();
+*/
+
+  /*--------------------------------------------------------------------------
+   * Ion species output
+   *------------------------------------------------------------------------*/
+
+/*
+  if(should_dump(Hhydro)) {
+    double time_to_dump_hydro = uptime();
+    dump_hydro_hdf5("ion", global->hHdParams.baseDir, 0);
+    time_to_dump_hydro = uptime() - time_to_dump_hydro;
+    sim_log("Time in dumping hydro: "<< time_to_dump_hydro << " s");
+  }
+
+#else // #ifdef DUMP_WITH_HDF5
+
+
+  if(should_dump(ehydro)) {
+    double time_to_dump_hydro = uptime();
+    hydro_dump("electron", global->hedParams);
+    time_to_dump_hydro = uptime() - time_to_dump_hydro;
+    sim_log("Time in dumping hydro: "<< time_to_dump_hydro << " s");
+  }
+*/
+
+  /*--------------------------------------------------------------------------
+   * Ion species output
+   *------------------------------------------------------------------------*/
+
+/*
+  if(should_dump(Hhydro)) {
+    double time_to_dump_hydro = uptime();
+    hydro_dump("ion", global->hHdParams);
+    time_to_dump_hydro = uptime() - time_to_dump_hydro;
+    sim_log("Time in dumping hydro: "<< time_to_dump_hydro << " s");
+  }
+
+
+#endif // #ifdef DUMP_WITH_HDF5
+*/
+  // Shut down simulation when wall clock time exceeds global->quota_sec.
+  // Note that the mp_elapsed() is guaranteed to return the same value for all
+  // processors (i.e., elapsed time on proc #0), and therefore the abort will
+  // be synchronized across processors. Note that this is only checked every
+  // few timesteps to eliminate the expensive mp_elapsed call from every
+  // timestep. mp_elapsed has an ALL_REDUCE in it!
+
+
+  if ( (step()>0 && global->quota_check_interval>0
+        && (step() & global->quota_check_interval)==0 ) || (global->write_end_restart) ) {
+
+    if ( (global->write_end_restart) ) {
+      global->write_end_restart = 0; // reset restart flag
+
+      //   if( uptime() > global->quota_sec ) {
+      sim_log( "Allowed runtime exceeded for this job.  Terminating....\n");
+      double dumpstart = uptime();
+
+      if(!global->rtoggle) {
+        global->rtoggle = 1;
+        //      BEGIN_TURNSTILE(NUM_TURNSTILES) {
+        checkpt("restore1", 0);
+        //    } END_TURNSTILE;
+      } else {
+        global->rtoggle = 0;
+        //      BEGIN_TURNSTILE(NUM_TURNSTILES) {
+        checkpt("restore0", 0);
+        //    } END_TURNSTILE;
+      } // if
+
+      mp_barrier(  ); // Just to be safe
+      sim_log( "Restart dump restart completed." );
+      double dumpelapsed = uptime() - dumpstart;
+      sim_log("Restart duration "<< dumpelapsed);
+      exit(0); // Exit or abort?                                                                                
+    }
+    //    } 
+    if( uptime() > global->quota_sec ) global->write_end_restart = 1;
+  }
+
+
+} // end diagnostics
+
+// ***********  PARTICLE INJECTION  - OPEN BOUNDARY *********
+begin_particle_injection {
+  int inject;
+  double x, y, z, age, flux, vtherm, vd;
+  double uv[3];
+  double zcell;
+  const int nsp=global->nsp;
+  const int nx=grid->nx;
+  const int ny=grid->ny;
+  const int nz=grid->nz;
+  const double rin[3]={global->rin[0],global->rin[1],global->rin[2]};
+  const double rout[3]={global->rout[0],global->rout[1],global->rout[2]};
+  const double sqpi =1.772453850905516;
+  const double dt=grid->dt;
+  const double hx=grid->dx;
+  const double hy=grid->dy;
+  const double hz=grid->dz;
+  const double nb=global->nb;
+  const double n_0=global->n_0;
+  const double nfac=global->nfac;
+
+  // Initialize the injectors on the first call
+  static int initted=0;
+  if ( !initted ) {
+
+    initted=1;
+
+    if (rank() == 0)
+      MESSAGE(("------------Initializing the Particle Injectors-------------"));
+
+    // Intialize injectors for Harris Sheet with a uniform background
+
+    if (global->right) {
+
+      DEFINE_INJECTOR(right,ny,nz);
+
+      if (step()==0) {
+        for ( int n=1; n<=nsp; n++ ) {
+          double cn = (uf(2)/vth(2))/(vth(n)/vth(2));
+          for ( int k=1;k<=nz; k++ ) {
+            for ( int j=1;j<=ny; j++ ) {
+              pright(1,2,n,k,j)=pright(2,1,n,k,j)=pright(1,3,n,k,j)
+                =pright(3,1,n,k,j)=pright(2,3,n,k,j)=pright(3,2,n,k,j)=0;
+              pright(1,1,n,k,j) = ratio(n)*(nb*vthb(n)*vthb(n) + n_0*vth(n)*vth(n)
+                                   /(cosh(zcell)*cosh(zcell)))/(2*nfac);
+              pright(2,2,n,k,j) = ratio(n)*(nb*vthb(n)*vthb(n) + n_0*vth(n)*vth(n)
+                                   *(1/(cosh(zcell)*cosh(zcell))+2*nb*cn*cn/
+                                     (n_0+nb*cosh(zcell)*cosh(zcell))))/(2*nfac);
+              pright(3,3,n,k,j) = pright(1,1,n,k,j);
+              bright(n,k,j) = 0;
+              zcell = (grid->z0 + k*hz-hz/2)/(global->L);
+              nright(n,k,j) = ratio(n)*(nb + n_0/(cosh(zcell)*cosh(zcell)))/nfac;
+              vtherm = sqrt(2.0*pright(3,3,n,k,j)/nright(n,k,j));
+              vd = -ux_inject(n)/vtherm;
+              fright(n,k,j) = 0*(nb*vthb(n) + n_0*vth(n)/(cosh(zcell)*cosh(zcell)))
+                /(2*hx*sqpi*nfac)+nright(n,k,j)*vtherm*(exp(-vd*vd)/sqpi+vd*(erf(vd)+1))/(2*hx);
+              uright(1,n,k,j) = ux_inject(n);
+              //std::cout<<ux(n)<<std::endl;
+
+              uright(2,n,k,j) = uf(n)/(n_0+nb*cosh(zcell)*cosh(zcell));
+              uright(3,n,k,j) = 0;
+
+            }
+          }
+        }  // end for
+      } // endif
+
+      else
+        READ_INJECTOR(right,ny,nz,0);
+
+    } //end right boundary
+
+    if (global->left) {
+
+      DEFINE_INJECTOR(left,ny,nz);
+
+      if (step()==0) {
+        for ( int n=1; n<=nsp; n++ ) {
+          double cn = (uf(2)/vth(2))/(vth(n)/vth(2));
+          for ( int k=1;k<nz+1; k++ ) {
+            for ( int j=1;j<=ny; j++ ) {
+              pleft(1,2,n,k,j)=pleft(2,1,n,k,j)=pleft(1,3,n,k,j)
+                =pleft(3,1,n,k,j)=pleft(2,3,n,k,j)=pleft(3,2,n,k,j)=0;
+              pleft(1,1,n,k,j) = ratio(n)*(nb*vthb(n)*vthb(n) + n_0*vth(n)*vth(n)
+                                  /(cosh(zcell)*cosh(zcell)))/(2*nfac);
+              pleft(2,2,n,k,j) = ratio(n)*(nb*vthb(n)*vthb(n) + n_0*vth(n)*vth(n)
+                                  *(1/(cosh(zcell)*cosh(zcell))+2*nb*cn*cn
+                                    /(n_0*+nb*cosh(zcell)*cosh(zcell))))/(2*nfac);
+              pleft(3,3,n,k,j) = pleft(1,1,n,k,j);
+              nleft(n,k,j) = ratio(n)*(nb + n_0/(cosh(zcell)*cosh(zcell)))/nfac;
+              vtherm = sqrt(2.0*pleft(3,3,n,k,j)/nleft(n,k,j));
+              bleft(n,k,j) = 0;
+              zcell = (grid->z0 + k*hz-hz/2)/(global->L);
+              
+              vd = ux_inject(n)/vtherm;
+              fleft(n,k,j) = 0*(nb*vthb(n) + n_0*vth(n)/(cosh(zcell)*cosh(zcell)))
+                /(2*hx*sqpi*nfac)+nleft(n,k,j)*vtherm*(exp(-vd*vd)/sqpi+vd*(erf(vd)+1))/(2*hx);
+              uleft(1,n,k,j) = ux_inject(n);
+              uleft(2,n,k,j) = uf(n)/(n_0+nb*cosh(zcell)*cosh(zcell));
+              uleft(3,n,k,j) = 0;
+              
+            }
+          }
+        } // end for
+      } //endif
+
+      else
+        READ_INJECTOR(left,ny,nz,0);
+
+    } // end left boundary
+
+    if (global->top) {
+
+      DEFINE_INJECTOR(top,ny,nx);
+
+      if (step()==0) {
+        for ( int n=1; n<=nsp; n++ ) {
+          for ( int i=1;i<=nx; i++ ) {
+            for ( int j=1;j<=ny; j++ ) {
+              btop(n,i,j) = 0;
+              ntop(n,i,j) = ratio(n)*nb/nfac;
+              ftop(n,i,j) = ntop(n,i,j)*vthb(n)/(2*hz*sqpi);
+              utop(1,n,i,j) = ux_inject(n);
+              utop(2,n,i,j) = 0;
+              utop(3,n,i,j) = 0;
+              ptop(1,2,n,i,j)=ptop(2,1,n,i,j)=ptop(1,3,n,i,j)=ptop(3,1,n,i,j)
+                =ptop(2,3,n,i,j)=ptop(3,2,n,i,j)=0;
+              ptop(1,1,n,i,j) = ntop(n,i,j)*vthb(n)*vthb(n)/2;;
+              ptop(2,2,n,i,j) = ntop(n,i,j)*vthb(n)*vthb(n)/2;;
+              ptop(3,3,n,i,j) = ntop(n,i,j)*vthb(n)*vthb(n)/2;;
+            }
+          }
+        } // end for
+      } //endif
+
+      else
+        READ_INJECTOR(top,ny,nx,0);
+
+    } // end top boundary
+
+    if (global->bottom) {
+
+      DEFINE_INJECTOR(bot,ny,nx);
+
+      if (step()==0) {
+        for ( int n=1; n<=nsp; n++ ) {
+          for ( int i=1;i<=nx; i++ ) {
+            for ( int j=1;j<=ny; j++ ) {
+              bbot(n,i,j) = 0;
+              nbot(n,i,j) = ratio(n)*nb/nfac;
+              fbot(n,i,j) = nbot(n,i,j)*vthb(n)/(2*hz*sqpi);
+              ubot(1,n,i,j) = ux_inject(n);
+              ubot(2,n,i,j) = 0.0;
+              ubot(3,n,i,j) = 0.0;
+              pbot(1,2,n,i,j)=pbot(2,1,n,i,j)=pbot(1,3,n,i,j)
+                =pbot(3,1,n,i,j)=pbot(2,3,n,i,j)=pbot(3,2,n,i,j)=0;
+              pbot(1,1,n,i,j) = nbot(n,i,j)*vthb(n)*vthb(n)/2;
+              pbot(2,2,n,i,j) = nbot(n,i,j)*vthb(n)*vthb(n)/2;
+              pbot(3,3,n,i,j) = nbot(n,i,j)*vthb(n)*vthb(n)/2;
+            }
+          }
+        } // end for
+      } //endif
+
+      else
+        READ_INJECTOR(bot,ny,nx,0);
+
+    }  // end bottom boundary
+
+    if (rank() == 0)
+      MESSAGE(("------------------------------------------------------------"));
+
+  } // End of Intialization
+
+  // Inject particles on Left Boundary
+  if (global->left) {
+    for ( int n=1; n<=nsp; n++ ) {
+      species_t * species = find_species_id(n-1,species_list );
+      species->max_np = 400*nx*ny*nz*20;
+      for ( int k=1;k<=nz; k++ ) {
+        for ( int j=1;j<=ny; j++ ) {
+          bleft(n,k,j) = bleft(n,k,j) + dt*fleft(n,k,j);
+          inject = (int) bleft(n,k,j);
+          bleft(n,k,j) = bleft(n,k,j) - (double) inject;
+          double uflow[3] = {uleft(1,n,k,j),uleft(2,n,k,j),uleft(3,n,k,j)};
+          double press[9] = {pleft(1,1,n,k,j),pleft(1,2,n,k,j),
+                             pleft(1,3,n,k,j),pleft(2,1,n,k,j),
+                             pleft(2,2,n,k,j),pleft(2,3,n,k,j),
+                             pleft(3,1,n,k,j),pleft(3,2,n,k,j),
+                             pleft(3,3,n,k,j)};
+          repeat(inject) {
+            compute_injection(uv,nleft(n,k,j),uflow,press,1,2,3,rng(0));
+            x = grid->x0;
+            y = grid->y0 + hy*(j-1) + hy*uniform( rng(0), 0, 1 );
+            z = grid->z0 + hz*(k-1) + hz*uniform( rng(0), 0, 1 );
+            age = 0;
+            
+            
+            inject_particle(species, x, y, z, uv[0], uv[1], uv[2], q(n), age,
+                            1 );
+          }
+        }
+      }
+    }
+  } // end left injector
+
+  // Inject particles on Right Boundary
+
+  if (global->right) {
+    for ( int n=1; n<=nsp; n++ ) {
+      species_t * species = find_species_id(n-1,species_list );
+      species->max_np = 400*nx*ny*nz*20;
+      for ( int k=1;k<=nz; k++ ) {
+        for ( int j=1;j<=ny; j++ ) {
+          bright(n,k,j) = bright(n,k,j) + dt*fright(n,k,j);
+          inject = (int) bright(n,k,j);
+          bright(n,k,j) = bright(n,k,j) - (double) inject;
+          double uflow[3] = {uright(1,n,k,j),uright(2,n,k,j),uright(3,n,k,j)};
+          double press[9] = {pright(1,1,n,k,j),pright(1,2,n,k,j),
+                             pright(1,3,n,k,j),pright(2,1,n,k,j),
+                             pright(2,2,n,k,j),pright(2,3,n,k,j),
+                             pright(3,1,n,k,j),pright(3,2,n,k,j),
+                             pright(3,3,n,k,j)};
+          repeat(inject) {
+            compute_injection(uv,nright(n,k,j),uflow,press,-1,2,3,rng(0));
+            x = grid->x1;
+            y = grid->y0 + hy*(j-1) + hy*uniform( rng(0), 0, 1 );
+            z = grid->z0 + hz*(k-1) + hz*uniform( rng(0), 0, 1 );
+            age = 0;
+            //if (n==1)std::cout<<uflow[0]<<", v="<<uv[0]<<std::endl;
+            inject_particle(species, x, y, z, uv[0], uv[1], uv[2], q(n), age,
+                            1 );
+          }
+        }
+      }
+    }
+  } // end right injector
+
+  // Inject particles on Top Boundary
+
+  if (global->top) {
+    for ( int n=1; n<=nsp; n++ ) {
+      species_t * species = find_species_id(n-1,species_list );
+      species->max_np = 400*nx*ny*nz*20;
+      for ( int i=1;i<=nx; i++ ) {
+        for ( int j=1;j<=ny; j++ ) {
+
+          vtherm = sqrt(2.0*ptop(3,3,n,i,j)/ntop(n,i,j));
+          double t=grid->dt*step();
+          double tau = global->tdrive;
+          double vexb = (global->edrive)*(1-exp(-t/tau))/field(i,j,nz).cbx;
+          vd = vexb/vtherm;
+          btop(n,i,j) = btop(n,i,j)
+            + dt*ntop(n,i,j)*vtherm*(exp(-vd*vd)/sqpi+vd*(erf(vd)+1))/(2*hz);
+
+          //btop(n,i,j) = btop(n,i,j) + dt*ftop(n,i,j);
+          inject = (int) btop(n,i,j);
+          btop(n,i,j) = btop(n,i,j)- (double) inject;
+          double uflow[3] = {utop(1,n,i,j) ,utop(2,n,i,j) , -vexb};
+
+          //double uflow[3] = {utop(1,n,i,j),utop(2,n,i,j),utop(3,n,i,j)};
+          double press[9] = {ptop(1,1,n,i,j),ptop(1,2,n,i,j),ptop(1,3,n,i,j),
+                             ptop(2,1,n,i,j),ptop(2,2,n,i,j),ptop(2,3,n,i,j),
+                             ptop(3,1,n,i,j),ptop(3,2,n,i,j),ptop(3,3,n,i,j)};
+          repeat(inject) {
+            compute_injection(uv,ntop(n,i,j),uflow,press,-3,2,1,rng(0));
+            x = grid->x0 + hx*(i-1) + hx*uniform( rng(0), 0, 1 );
+            y = grid->y0 + hy*(j-1) + hy*uniform( rng(0), 0, 1 );
+            z = grid->z1;
+            age=0;
+            //std::cout<<n<<std::endl;
+            //if(n==1)std::cout<<uv[0]<<std::endl;
+            inject_particle(species, x, y, z, uv[0], uv[1], uv[2], q(n), age,
+                            1 );
+          }
+        }
+      }
+    }
+  }  // end top injector
+
+  // Inject particles on Bottom Boundary
+  if (global->bottom) {
+    for ( int n=1; n<=nsp; n++ ) {
+      species_t * species = find_species_id(n-1,species_list );
+      species->max_np = 400*nx*ny*nz*20;
+      //std::cout<<species->np<<"max_np="<<species->max_np<<std::endl;
+      for ( int i=1;i<=nx; i++ ) {
+        for ( int j=1;j<=ny; j++ ) {
+
+          vtherm = sqrt(2.0*pbot(3,3,n,i,j)/nbot(n,i,j));
+          double t=grid->dt*step();
+          double tau = global->tdrive;
+          double vexb = (global->edrive)*(1-exp(-t/tau))/field(i,j,1).cbx;
+          vd =   -vexb/vtherm;
+          bbot(n,i,j) = bbot(n,i,j)
+            + dt*nbot(n,i,j)*vtherm*(exp(-vd*vd)/sqpi+vd*(erf(vd)+1))/(2*hz);
+
+          //bbot(n,i,j) = bbot(n,i,j) + dt*fbot(n,i,j);
+          inject = (int) bbot(n,i,j);
+          bbot(n,i,j) = bbot(n,i,j)- (double) inject;
+          //double uflow[3] = {ubot(1,n,i,j),ubot(2,n,i,j),ubot(3,n,i,j)};
+          double uflow[3] = {ubot(1,n,i,j) ,ubot(2,n,i,j) , vexb };
+          double press[9] = {pbot(1,1,n,i,j),pbot(1,2,n,i,j),pbot(1,3,n,i,j),
+                             pbot(2,1,n,i,j),pbot(2,2,n,i,j),pbot(2,3,n,i,j),
+                             pbot(3,1,n,i,j),pbot(3,2,n,i,j),pbot(3,3,n,i,j)};
+          repeat(inject) {
+            compute_injection(uv,nbot(n,i,j),uflow,press,3,2,1,rng(0));
+            x = grid->x0 + hx*(i-1) + hx*uniform( rng(0), 0, 1 );
+            y = grid->y0 + hy*(j-1) + hy*uniform( rng(0), 0, 1 );
+            z = grid->z0;
+            age = 0;
+            inject_particle(species, x, y, z, uv[0], uv[1], uv[2], q(n), age,
+                            1 );
+          }
+        }
+      }
+    }
+  } // end bottom injector
+//std::cout<<"END PARTICLE INJECTION"<<std::endl;
+
+  // *******  Update the injector moments at every sort interval *********
+  double v[3];
+  double u[3];
+  double p[9];
+
+#define icell(i,j,k) INDEX_FORTRAN_3(i,j,k,0,nx+1,0,ny+1,0,nz+1)
+#define v(i) v[INDEX_FORTRAN_1(i,1,3)]
+#define u(i) u[INDEX_FORTRAN_1(i,1,3)]
+#define p(i,j) p[INDEX_FORTRAN_2(i,j,1,3,1,3)]
+
+  // Parameters for measuring moments  - BE CAREFUL -
+  // don't make too big or we will go off the node
+
+  int noff = 1;   // Offset from edge - to measure moments
+                  // noff = 0  --> start with cell directly on boundary
+
+  int nav = 2;  // How many cells to include in the "inward" direction in avg
+  int navin = 2;// How many cells to include in the "inward" direction in avg
+
+  // Right boundary Moments
+  if (global->right) {
+    for ( int n=1; n<=nsp; n++ ) {
+      species_t * species = find_species_id(n-1,species_list );
+      particle_t * part;
+      if (remainder(step(), global->sort[n-1]) == 0) {
+        double npart;
+        for ( int k=1;k<=nz; k++ ) {
+          for ( int j=1;j<=ny; j++ ) {
+            npart = 0;
+            flux = 0;
+            u[0] = u[1] = u[2] = 0;
+            p[0] = p[1] = p[2] = p[3]= p[4] = p[5] = p[6]= p[7] = p[8] = 0;
+            for ( int i=nx-noff; i>nx-nav-noff; i-- ){
+              int nstart = species->partition[icell(i,j,k)];
+              int nstop  = species->partition[icell(i,j,k)+1];
+              int ncell  = nstop - nstart;
+              npart = npart + ncell;
+              for (int np=nstart; np<nstop ; np++) {
+                part=&species->p[np];
+                double gamma = sqrt(1.0+part->ux*part->ux + part->uy*part->uy
+                                    + part->uz*part->uz);
+                v(1) = part->ux;
+                v(2) = part->uy;
+                v(3) = part->uz;
+                if (v(1) < 0) flux = flux - v(1)/gamma;
+                for ( int a=1;a<=3; a++ ) {
+                  u(a) = u(a) + v(a);
+                  for ( int b=1;b<=3; b++ ) {
+                    p(a,b) = p(a,b) + v(a)*v(b);
+                  }
+                }
+              } // end particle loop for single cell
+            } // end cells included for these moments
+
+            if ( npart > 0 ) {
+              fright(n,k,j) = (1.0-rout[1])*fright(n,k,j)
+                + rout[1]*flux/(nav*hx);
+              nright(n,k,j) = (1.0-rout[0])*nright(n,k,j) + rout[0]*npart/nav;
+              for ( int a=1; a<=3; a++ ) {
+                uright(a,n,k,j) = (1-rout[1])*uright(a,n,k,j)
+                  + rout[1]*u(a)/npart;
+                for ( int b=1;b<=3; b++ ) {
+                  p(a,b) = (p(a,b) - u(a)*u(b)/npart)/nav;
+                  pright(a,b,n,k,j) = (1-rout[2])*pright(a,b,n,k,j)
+                    + rout[2]*p(a,b);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }  // end right moment update
+
+  // Left boundary Moments
+  if (global->left) {
+    for ( int n=1; n<=nsp; n++ ) {
+      species_t * species = find_species_id(n-1,species_list );
+      particle_t * part;
+      if (remainder(step(), global->sort[n-1]) == 0) {
+        double npart;
+        for ( int k=1;k<=nz; k++ ) {
+          for ( int j=1;j<=ny; j++ ) {
+            npart = 0;
+            flux = 0;
+            u[0] = u[1] = u[2] = 0;
+            p[0] = p[1] = p[2] = p[3]= p[4] = p[5] = p[6]= p[7] = p[8] = 0;
+            for ( int i=1+noff;i<=nav+noff; i++ ) {
+              int nstart = species->partition[icell(i,j,k)];
+              int nstop  = species->partition[icell(i,j,k)+1];
+              int ncell  = nstop - nstart;
+              npart = npart + ncell;
+              for (int np=nstart; np < nstop ; np++) {
+                part=&species->p[np];
+                double gamma = sqrt(1.0+part->ux*part->ux + part->uy*part->uy
+                                    + part->uz*part->uz);
+                v(1) = part->ux;
+                v(2) = part->uy;
+                v(3) = part->uz;
+                if (v(1) > 0) flux = flux + v(1)/gamma;
+                for ( int a=1; a<=3; a++ ) {
+                  u(a) = u(a) + v(a);
+                  for ( int b=1;b<=3; b++ ) {
+                    p(a,b) = p(a,b) + v(a)*v(b);
+                  }
+                }
+              } // end particle loop for single cell
+            } // end cells included for these moments
+
+            if ( npart > 0 ) {
+              fleft(n,k,j) = (1.0-rout[1])*fleft(n,k,j) + rout[1]*flux/(nav*hx);
+              nleft(n,k,j) = (1.0-rout[0])*nleft(n,k,j) + rout[0]*npart/nav;
+              for ( int a=1; a<=3; a++ ) {
+                uleft(a,n,k,j) = (1-rout[1])*uleft(a,n,k,j)
+                  + rout[1]*u(a)/npart;
+                for ( int b=1;b<=3; b++ ) {
+                  p(a,b) = (p(a,b) - u(a)*u(b)/npart)/nav;
+                  pleft(a,b,n,k,j) = (1-rout[2])*pleft(a,b,n,k,j)
+                    + rout[2]*p(a,b);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }  // end left moment update
+
+  // Top boundary Moments
+  if (global->top) {
+    for ( int n=1; n<=nsp; n++ ) {
+      species_t * species = find_species_id(n-1,species_list );
+      particle_t * part;
+      if (remainder(step(), global->sort[n-1]) == 0) {
+        double npart;
+        for ( int i=1;i<=nx; i++ )
+          for ( int j=1;j<=ny; j++ ) {
+            npart = 0;
+            flux = 0;
+            u[0] = u[1] = u[2] = 0;
+            p[0] = p[1] = p[2] = p[3]= p[4] = p[5] = p[6]= p[7] = p[8] = 0;
+            for ( int k=nz-noff; k>nz-navin-noff; k-- ) {
+              int nstart = species->partition[icell(i,j,k)];
+              int nstop  = species->partition[icell(i,j,k)+1];
+              int ncell  = nstop - nstart;
+              npart = npart + ncell;
+              for (int np=nstart; np < nstop ; np++) {
+                part=&species->p[np];
+                double gamma = sqrt(1.0+part->ux*part->ux + part->uy*part->uy
+                                    + part->uz*part->uz);
+                v(1) = part->ux;
+                v(2) = part->uy;
+                v(3) = part->uz;
+                if (v(3) < 0) flux = flux - v(3)/gamma;
+                for ( int a=1; a<=3; a++ ) {
+                  u(a) = u(a) + v(a);
+                  for ( int b=1;b<=3; b++ ) {
+                    p(a,b) = p(a,b) + v(a)*v(b);
+                  }
+                }
+              } // end particle loop for single cell
+            } // end cells included for these moments
+
+            if ( npart > 0 ) {
+              ftop(n,i,j) = (1.0-rin[1])*ftop(n,i,j) + rin[1]*flux/(navin*hz);
+
+              if ( npart/navin < ntop(n,i,j) )
+                ftop(n,i,j) = (ntop(n,i,j)- npart/navin)/dt;
+              else ftop(n,i,j)=0;
+
+              ntop(n,i,j) = (1-rin[0])*ntop(n,i,j) + rin[0]*npart/navin;
+              for ( int a=1;a<=3; a++ ) {
+                utop(a,n,i,j) = (1-rin[1])*utop(a,n,i,j) + rin[1]*u(a)/npart;
+                for ( int b=1;b<=3; b++ ) {
+                  p(a,b) = (p(a,b) - v(a)*v(b)/npart)/navin;
+                  ptop(a,b,n,i,j) = (1-rin[2])*ptop(a,b,n,i,j) + rin[2]*p(a,b);
+                }
+              }
+            }
+          }
+      }
+    }
+  }  // end top moment update
+
+  if (global->bottom) {
+    for ( int n=1; n<=nsp; n++ ) {
+      species_t * species = find_species_id(n-1,species_list );
+      particle_t * part;
+      if (remainder(step(), global->sort[n-1]) == 0) {
+        double npart;
+        for ( int i=1;i<=nx; i++ )
+          for ( int j=1;j<=ny; j++ ) {
+            npart = 0;
+            flux = 0;
+            u[0] = u[1] = u[2] = 0;
+            p[0] = p[1] = p[2] = p[3]= p[4] = p[5] = p[6]= p[7] = p[8] = 0;
+            for ( int k=1+noff;k<=navin+noff; k++ ) {
+              int nstart = species->partition[icell(i,j,k)];
+              int nstop  = species->partition[icell(i,j,k)+1];
+              int ncell  = nstop - nstart;
+              npart = npart + ncell;
+              for (int np=nstart; np < nstop ; np++) {
+                part=&species->p[np];
+                double gamma = sqrt(1.0+part->ux*part->ux + part->uy*part->uy
+                                    + part->uz*part->uz);
+                v(1) = part->ux;
+                v(2) = part->uy;
+                v(3) = part->uz;
+                if (v(3) > 0) flux = flux + v(3)/gamma;
+                for ( int a=1; a<=3; a++ ) {
+                  u(a) = u(a) + v(a);
+                  for ( int b=1;b<=3; b++ ) {
+                    p(a,b) = p(a,b) + v(a)*v(b);
+                  }
+                }
+              } // end particle loop for single cell
+            } // end cells included for these moments
+
+            if ( npart > 0) {
+              fbot(n,i,j) = (1.0-rin[1])*fbot(n,i,j) + rin[1]*flux/(navin*hz);
+              // if ( npart/navin < nbot(n,i,j) ) fbot(n,i,j)
+              // = (nbot(n,i,j)- npart/navin)/dt; else fbot(n,i,j)=0;
+              nbot(n,i,j) = (1-rin[0])*nbot(n,i,j) + rin[0]*npart/navin;
+              for ( int a=1;a<=3; a++ ) {
+                ubot(a,n,i,j) = (1-rin[1])*ubot(a,n,i,j) + rin[1]*u(a)/npart;
+                for ( int b=1;b<=3; b++ ) {
+                  p(a,b) = (p(a,b) - v(a)*v(b)/npart)/navin;
+                  pbot(a,b,n,i,j) = (1-rin[2])*pbot(a,b,n,i,j) + rin[2]*p(a,b);
+                }
+              }
+            }
+          }
+      }
+    }
+  }  // end bottom moment update
+
+
+  // Periodically save injector moments on outflow boundaries
+  // Only do this on the outflow boundaries, and only if we have
+  // a single domain on each boundary - otherwise would have to combine
+  // data files.
+
+  if ( global->topology_y == 1 && global->topology_z ==1 ) {
+
+    // How often to write moments to file -
+
+    int nskip = 10;
+
+    if (global->left) {
+      int j = 1;
+      for ( int n=1; n<=nsp; n++ ) {
+        if (remainder(step(), nskip*global->sort[n-1]) == 0) {
+          char buffer[40];
+          sprintf(buffer, "injectors/left%i.dat", n);
+          FileIO fileIO;
+          if ( ! (fileIO.open(buffer, io_append)==ok) ) 
+            ERROR(("Cannot open file."));
+          for ( int k=1;k<=nz; k++ ) {
+            zcell = (grid->z0 + k*hz-hz/2)/(global->L);
+            fileIO.print("%6.4g %6.4g %6.4g %6.4g %6.4g %6.4g %6.4g %6.4g %6.4g %6.4g %6.4g \n",
+                         zcell,nleft(n,k,j),uleft(1,n,k,j),uleft(2,n,k,j),
+                         uleft(3,n,k,j),pleft(1,1,n,k,j),pleft(2,2,n,k,j),
+                         pleft(3,3,n,k,j),pleft(1,2,n,k,j),pleft(1,3,n,k,j),
+                         pleft(2,3,n,k,j));
+          } //end for
+          fileIO.print("  \n \n");
+          fileIO.close();
+        }
+      }
+    }  //end left output
+
+    if (global->right) {
+      int j = 1;
+      for ( int n=1; n<=nsp; n++ ) {
+        if (remainder(step(), nskip*global->sort[n-1]) == 0) {
+          char buffer[40];
+          sprintf(buffer, "injectors/right%i.dat", n);
+          FileIO fileIO;
+          if ( ! (fileIO.open(buffer, io_append)==ok) ) 
+            ERROR(("Cannot open file."));
+          for ( int k=1;k<=nz; k++ ) {
+            zcell = (grid->z0 + k*hz-hz/2)/(global->L);
+            fileIO.print("%6.4g %6.4g %6.4g %6.4g %6.4g %6.4g %6.4g %6.4g %6.4g %6.4g %6.4g \n",
+                         zcell,nright(n,k,j),uright(1,n,k,j),uright(2,n,k,j),
+                         uright(3,n,k,j),pright(1,1,n,k,j),pright(2,2,n,k,j),
+                         pright(3,3,n,k,j),pright(1,2,n,k,j),pright(1,3,n,k,j),
+                         pright(2,3,n,k,j));
+          } //end for
+          fileIO.print("  \n \n");
+          fileIO.close();
+        }
+      }
+    }  //end right output
+
+  } //end output for injector moments
+//   int inject;
+//   double x, y, z, age, vtherm, vd;
+//   double uv[3];
+//   double nfac = global->nfac;
+//   const int nsp=global->nsp;
+//   const int ny=grid->ny;
+//   const int nz=grid->nz;
+//   const double sqpi =1.772453850905516;
+//   const double dt=grid->dt;
+//   const double hx=grid->dx;
+//   const double hy=grid->dy;
+//   const double hz=grid->dz;
+
+//   // Initialize the injectors on the first call
+
+//     static int initted=0;
+//     if ( !initted ) {
+
+//       initted=1;
+
+//       if (rank() == 0) MESSAGE(("----------------Initializing the Particle Injectors-----------------")); 
+      
+//       // MESSAGE(("------rank=%g    right=%i     left=%i    nsp=%i",rank(),global->right,global->left,nsp)); 
+//       // Intialize injectors
+
+//             if (global->right) {
+// 	      if (rank() == 0) MESSAGE(("----------------Initializing the Right Particle Injectors-----------------")); 
+// 	DEFINE_INJECTOR(right,ny,nz);
+  
+// 	if (step() == 0) { 
+    
+// 	  for ( int n=1; n<=nsp; n++ ) { 
+//       n_inject(n)=0;
+// 	    for ( int k=1;k<=nz; k++ ) {
+// 	      for ( int j=1;j<=ny; j++ ) { 
+// 		bright(n,k,j) = 0;
+// 		nright(n,k,j) = global->npright[n-1]/nfac;
+    
+// 		uright(1,n,k,j) = -global->ur;
+// 		uright(2,n,k,j) = 0;
+// 		uright(3,n,k,j) = 0;
+// 		pright(1,2,n,k,j)=pright(2,1,n,k,j)=pright(1,3,n,k,j)=pright(3,1,n,k,j)=pright(2,3,n,k,j)=pright(3,2,n,k,j)=0;
+// 		pright(1,1,n,k,j) = global->npright[n-1]*vth(n)*vth(n)/(2.0*nfac);
+// 		pright(2,2,n,k,j) = pright(1,1,n,k,j);
+// 		pright(3,3,n,k,j) = pright(1,1,n,k,j);
+// 	      }      
+// 	    }
+// 	  }  // end for	
+// 	} // endif
+// 	else {
+
+//       if (rank() == 0) MESSAGE(("----------------Reading the Particle Injectors-----------------")); 
+//       READ_INJECTOR(right, ny, nz, 0);
+// 	}
+//       } //end right boundary
+
+//       if (rank() == 0) MESSAGE(("-------------------------------------------------------------------"));
+
+//        }// End of Intialization
+//         // 打开文件以追加模式写入粒子信息
+//   std::ofstream particle_file("particle_injection_info.txt", std::ios::app);
+//   if (!particle_file.is_open()) {
+//     std::cerr << "Error opening file for writing particle information." << std::endl;
+//     return;
+//   }
+//         if (global->right) {
+//           //std::cout<<nsp<<"\n";
+//   //            std::cout<<"Time step= "<<step()<<"\n";
+//   int num_i_tracer    = global->num_i_tracer;
+//   int num_alpha_tracer    = global->num_alpha_tracer;
+//   int num_pui_tracer    = global->num_pui_tracer;   // tracer index
+//   int i_particle  = global->i_particle;   // ion particle index
+//   int alpha_particle  = global->alpha_particle;   // alpha particle index
+//   int pui_particle  = global->pui_particle;   // pui particle index
+//   int PUI_inject_number = 0;
+//   //double pui_flux = PUI_flux_to_right(33.5,1.4,5,global->ur,10.07);
+//   //const double denominator = integral_flux(global->ur, 0.01, 0.01);
+//   //std::cout<<denominator/speed_cdf(1,33.5,1.4,5)/pow(10.07,3)<<" "<<pui_flux<<"\n";
+//   //std::cout<<speed_cdf(1)<<" "<<global->PUI_flux<<"\n";
+//   // std::cout<<global->M<<" "<<find_M(global->ur, 0.1, 0.1)<<"\n";
+  
+//       for ( int n=1; n<=nsp; n++ ) { 
+// 	species_t * species = find_species_id(n-1,species_list );  
+//   //std::cout<<species->np<<"\n";
+//   species_t *tracer = find_species_id(n+2, global->tracers_list);
+
+//   //std::cout<<n<<" "<<tracer->name<<"\n";
+// 	for ( int k=1;k<=nz; k++ ) {
+//     //std::cout<<k<<"**********"<<"\n";
+// 	  for ( int j=1;j<=ny; j++ ) {
+// 	    vtherm = sqrt(2.0*pright(1,1,n,k,j)/nright(n,k,j));
+//       //std::cout <<"n="<<n<<", vth="<<vtherm <<"\n";
+// 	    vd =  (global->ur)/vtherm;
+//       if (n!=nsp){
+// 	      bright(n,k,j) = bright(n,k,j)+ dt*nright(n,k,j)*vtherm*(exp(-vd*vd)/sqpi+vd*(erf(vd)+1))/(2*hx);
+//         n_inject(n) += dt*nright(n,k,j)*vtherm*(exp(-vd*vd)/sqpi+vd*(erf(vd)+1))/(2*hx);
+        
+
+       
+//       }
+//       else{
+//         bright(n,k,j) = bright(n,k,j)+dt*nright(n,k,j)*global->PUI_flux_normalized/hx;//escape PUIs plus inject PUI flow
+//         n_inject(n) += dt*nright(n,k,j)*global->PUI_flux_normalized/hx;
+        
+//         //std::cout<<global->PUI_flux_normalized*dt*nright(n,k,j)/hx;
+//         //bright(n,k,j) = bright(n,k,j)+ dt*nright(n,k,j)*(global->ur)/hx;//inject PUI flow
+//         //std::cout<<dt*nright(n,k,j)*pui_flux/hx+dt*nright(n,k,j)*(global->ur)/hx<<" "<<denominator*nright(n,k,j)*dt/hx<<"\n";
+//       }
+// 	    inject = (long) bright(n,k,j);
+// 	    bright(n,k,j) = bright(n,k,j) - (double) inject;
+//       // inject = (long)n_inject(n);
+//       // n_inject(n) = n_inject(n)-(double)inject;
+//       if (n==3){
+//         PUI_inject_number += inject;
+//         //std::cout<<"step="<<step()<<", n_inject="<<n_inject(n) <<", inject="<<inject<<", k="<<k<<"\n";
+//       }
+//     //   double integer_part = floor(bright(n,k,j));
+//     //   double fractional = bright(n,k,j)-integer_part;
+//     //   if (uniform(rng(0), 0, 1) < fractional) {
+//     //     inject = (long)(integer_part + 1);
+//     // } else {
+//     //     inject = (long)integer_part;
+//     // }
+//     // bright(n,k,j) = bright(n,k,j) - inject;
+//     // std::cout<<inject<<"\n";
+// 	    double uflow[3] = {uright(1,n,k,j),uright(2,n,k,j),uright(3,n,k,j)};
+// 	    double press[9] = {pright(1,1,n,k,j),pright(1,2,n,k,j),pright(1,3,n,k,j),pright(2,1,n,k,j),pright(2,2,n,k,j),pright(2,3,n,k,j),pright(3,1,n,k,j),pright(3,2,n,k,j),pright(3,3,n,k,j)};	     
+
+// 	    //MESSAGE((" Injecting right  --> n= %i    inject=%i   nright=%e    vth=%e  vd=%e",n,inject,nright(n,k,j),vtherm,vd)); 
+// 	      // MESSAGE((" Injecting right  --> n= %i    inject=%i",n,inject)); 
+//       //std::cout<<species->np<<"\n";
+// 	    repeat(inject) {
+// 	      //MESSAGE((" Injecting right  --> n= %i    uvx=%e",inject,uv[0])); 
+
+// 	      compute_injection(uv,nright(n,k,j),uflow,press,-1,2,3,rng(0));
+// 	      x = grid->x1; 
+// 	      y = grid->y0 + hy*(j-1) + hy*uniform(rng(0), 0, 1); 
+// 	      z = grid->z0 + hz*(k-1) + hz*uniform(rng(0), 0, 1); 	    
+// 	      age = 0;
+//         double vx, vy, vz;
+//         //std::cout<<inject<<"\n";
+//         if (n!=nsp){
+// 	      inject_particle(species, x, y, z, uv[0], uv[1], uv[2], abs(q(n)) , age, 0 );
+//         vx = uv[0];
+//         vy = uv[1];
+//         vz = uv[2];
+//         //std::cout<<uv[0]<<"\n";
+//         /*
+//         if (n==1){
+//           i_particle++;
+//              if (global->particle_tracing == 1) { // only tag particles in the 1st pass
+//       if (i_particle%global->particle_select == 0) {
+//         num_i_tracer++;
+//         // int tag = ((((int)rank())<<19) | (itracer & 0x7ffff)); // 13 bits (8192) for rank and 19 bits (~520k) 
+//         int tag = ((((int)rank())<<16) | (num_i_tracer & 0x1fff)); // 19 bits (520k) for rank and 13 bits (8192)
+//         tag_tracer( (species->p + species->np-1), tracer, tag );
+        
+//       }
+//     }
+//         }
+//            if (n==2){
+//           alpha_particle++;
+//              if (global->particle_tracing == 1) { // only tag particles in the 1st pass
+//       if (alpha_particle%global->particle_select == 0) {
+//         num_alpha_tracer++;
+//         std::cout<<step()<<" "<<inject<<" "<<num_alpha_tracer<<"\n";
+//         // int tag = ((((int)rank())<<19) | (itracer & 0x7ffff)); // 13 bits (8192) for rank and 19 bits (~520k) 
+//         int tag = ((((int)rank())<<16) | (num_alpha_tracer & 0x1fff)); // 19 bits (520k) for rank and 13 bits (8192)
+//         tag_tracer( (species->p + species->np-1), tracer, tag );
+        
+//       }
+//     }
+//         }*/
+//         }
+//         //end if
+        
+//         else{
+//           double ux_pui, uy_pui, uz_pui;
+//           //double theta_pui, phi_pui;
+//           // Vc = 10.07;
+//          //double x_pui = uniform(rng(0), grid->x1-2*hx, grid->x1);
+//           // theta_pui = acos(uniform(rng(0),-1,global->ur/Vc));
+//           // phi_pui = uniform(rng(0),0,2*M_PI);
+
+//           //V = Vc*inverse_cdf(uniform(rng(0),0,1), 1e-3);
+          
+//           std::vector<double> random_velocity = rejection_sampling_cylindrical(global->ur, 10*global->M, global->PUI_flux);
+//           //std::vector<double> random_velocity_2 = rejection_sampling_cylindrical(global->ur, global->M, global->PUI_flux);
+//           ux_pui = -random_velocity[0];//-inverse_F(uniform(rng(0),0,1),global->ur,1e-1,1e-1);//V*sin(theta_pui)*cos(phi_pui)-global->ur;
+//           uy_pui = random_velocity[1];
+//           uz_pui = random_velocity[2];
+//           //std::cout<<random_velocity[0]<<" "<<random_velocity_2[0]<<"\n";
+//           inject_particle(species, x, y, z, ux_pui, uy_pui, uz_pui, abs(q(n)) , age, 0 );
+             
+//           pui_particle++;
+//           vx = ux_pui;
+//           vy = uy_pui;
+//           vz = uz_pui;
+//             /*
+//              if (global->particle_tracing == 1) { // only tag particles in the 1st pass
+//       if (pui_particle%global->particle_select == 0) {
+//         num_pui_tracer++;
+//         // int tag = ((((int)rank())<<19) | (itracer & 0x7ffff)); // 13 bits (8192) for rank and 19 bits (~520k) 
+//         int tag = ((((int)rank())<<16) | (num_pui_tracer & 0x1fff)); // 19 bits (520k) for rank and 13 bits (8192)
+//         tag_tracer( (species->p + species->np-1), tracer, tag );
+        
+//       }
+//     }*/
+        
+//           //if (rank()==0){
+//             //particle_t *p = species->p;
+//             //std::cout<<step()<<" "<<p->dx<<"\n";
+//           //}
+//         }//PUI injection
+//          // 记录粒子的位置和速度信息到文件
+//          particle_file << step() <<" "<<species->name<< " " << x << " " << y << " " << z << " " << vx << " " << vy << " " << vz << std::endl;
+      
+// 	    }
+//       global->i_particle = i_particle;
+//       global->alpha_particle = alpha_particle;
+//       global-> pui_particle = pui_particle;
+//       //global->num_i_tracer = num_i_tracer;
+//       //global->num_alpha_tracer = num_alpha_tracer;
+//       //global->num_pui_tracer = num_pui_tracer;
+
+// 	  }
+    
+// 	}
+//   // if (n==3){
+//   //   std::cout<<"step="<<step()<<", inject="<<PUI_inject_number<<"\n";
+//   // }
+//       }
+      
+//     } // end right injector
+//     particle_file.close();
+if ( global->particle_tracing > 0 ) advance_tracers(1);//advance the tracer particles
+} // end particle injection
+
+//*******************  CURRENT INJECTION ********************
+begin_current_injection {
+} // end current injection
+
+//*******************  FIELD INJECTION **********************
+begin_field_injection {
+   const int nx=grid->nx;
+  const int ny=grid->ny;
+  const int nz=grid->nz;
+  double t=grid->dt*step();
+  double tau = global->tdrive;
+  int x,y,z;
+
+  // There macros are from local.c to apply boundary conditions
+#define XYZ_LOOP(xl,xh,yl,yh,zl,zh)             \
+  for( z=zl; z<=zh; z++ )                       \
+    for( y=yl; y<=yh; y++ )                     \
+      for( x=xl; x<=xh; x++ )
+
+#define xy_EDGE_LOOP(z) XYZ_LOOP(1,nx,1,ny+1,z,z)
+#define yx_EDGE_LOOP(z) XYZ_LOOP(1,nx+1,1,ny,z,z)
+
+  // Top Boundary
+  if (global->top) {
+    yx_EDGE_LOOP(nz+1) field(x,y,z).ey = (global->edrive)*(1-exp(-t/tau));
+    xy_EDGE_LOOP(nz+1) field(x,y,z).ex = -(global->edrive)*(1-exp(-t/tau))
+      *global->bg;
+  }
+
+  // Bottom Boundary
+  if (global->bottom) {
+    yx_EDGE_LOOP(1) field(x,y,z).ey = (global->edrive)*(1-exp(-t/tau));
+    xy_EDGE_LOOP(1) field(x,y,z).ex = (global->edrive)*(1-exp(-t/tau))
+      *global->bg;
+  }
+//   const int nx=grid->nx;
+//   const int ny=grid->ny;
+//   const int nz=grid->nz;
+//   int x,y,z;
+//   double b0 = global->b0;
+//   double sn = global->sn;
+//   double Vflow = global->ur, r=0.005;
+//   // There macros are from local.c to apply boundary conditions
+// #define XYZ_LOOP(xl,xh,yl,yh,zl,zh)             \
+//   for( z=zl; z<=zh; z++ )                       \
+//     for( y=yl; y<=yh; y++ )                     \
+//       for( x=xl; x<=xh; x++ )
+
+// #define yz_EDGE_LOOP(x) XYZ_LOOP(x,x,0,ny+1,0,1+nz)
+
+//   // Right Boundary
+// #if false
+//   if (global->right) {
+//     //XYZ_LOOP(nx-5,nx,0,ny+1,0,nz+1) field(x,y,z).ex  = 0;
+//     //XYZ_LOOP(nx-5,nx,0,ny+1,0,nz+1) field(x,y,z).ey  = -Vflow*b0*sn;
+//     //XYZ_LOOP(nx-5,nx,0,ny+1,0,nz+1) field(x,y,z).ez  = 0;
+//     XYZ_LOOP(nx-1,nx,0,ny+1,0,nz+1)field(x,y,z).cbx = (1.0-r)*field(x,y,z).cbx + r*b0*sqrt(1-sn*sn);
+//     XYZ_LOOP(nx-1,nx,0,ny+1,0,nz+1) field(x,y,z).cby = (1.0-r)*field(x,y,z).cby;
+//     XYZ_LOOP(nx-1,nx,0,ny+1,0,nz+1)field(x,y,z).cbz = (1.0-r)*field(x,y,z).cbz + r*b0*sn;
+//   }
+// #else
+//   #include "aw_field.cxx"
+// #endif
+}  // end field injection
+
+
+//*******************  COLLISIONS ***************************
+begin_particle_collisions {
+} // end collisions
+
