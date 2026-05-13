@@ -205,7 +205,7 @@ begin_initialization {
   
   // Derived normalization parameters:
   double v_A = b0/sqrt(mu0*n0*mi); // Alfven velocity
-  double v_beam_drift = 1.0;//1.0;       // Drift velocity of beam
+  double v_beam_drift = 1.0;       // Drift velocity of beam
 
   double wci = ec*b0/mi;          // Cyclotron freq
   double di = v_A/wci;            // Ion skin-depth
@@ -215,7 +215,7 @@ begin_initialization {
   double Vd_Va    = 1.86;           //11.4;             // Alfven Mach number(11.4 for TS, 3.0 for Interplanetary shock)
   double Ti_Te    = 1;            // Ion temperature / electron temperature
   double theta    = 0 * M_PI / 180.0; // 10.0*M_PI/180.0;  // Shock normal/B field angle
-  double beta_i   = 2;//0.5;//0.5;//0.25;     //1.0         // Background ion beta
+  double beta_i   = 0.5;//0.5;//0.25;     //1.0         // Background ion beta
   double beta_e = 0.5;                  //Background electron beta
   double gamma    = 1.0;//5.0/3.0;              // Ratio of specific heats
   double L_di = 0.5;
@@ -228,14 +228,19 @@ begin_initialization {
   // Derived quantities for model:
  
   double Ti = beta_i*b0*b0/2.0/n0;
+  double Tperp_Tpara = 1.0;//1.5
+  double Tperp = 3*Ti*Tperp_Tpara/(1+2*Tperp_Tpara); // Perpendicular ion temperature
+  double Tpara = Tperp/Tperp_Tpara;
   double Te = Ti/Ti_Te;
   double n_0 = b0*b0/2/Te/(1+Ti_Te); // Current sheet ion density
-  double n_back = 0.2*n_0; // Background ion density
+  double n_back = 2*n_0/3;//2*n_0/3; // Background ion density
   
 
   double Ti_c = Ti;
   double Ti_b = Ti;
   double vthi = sqrt(Ti/mi);
+  double vthi_perp = sqrt(Tperp/mi);
+  double vthi_para = sqrt(Tpara/mi);
   double vthi_c = sqrt(Ti_c/mi);
   double vthi_b = sqrt(Ti_b/mi);
   double vth_alpha;
@@ -247,19 +252,19 @@ begin_initialization {
   double sn       = sin(theta);
 
   // Numerical parameters
-  double taui    = 75;//50;//50;    // Simulation run time in wci^-1.
+  double taui    = 125;//50;//50;    // Simulation run time in wci^-1.
   double quota   = 23.5;   // run quota in hours
   double quota_sec = quota*3600;  // Run quota in seconds
   
-  double Lx    = 256*di;    // size of box in x dimension
+  double Lx    = 512*di;    // size of box in x dimension
   double Ly    = 1.0*di;    // size of box in y dimension
-  double Lz    = 32*di;     // size of box in z dimension
+  double Lz    = 64*di;     // size of box in z dimension
   double L = L_di*di;  
-  double nx = 256;//256;
+  double nx = 512;//256;
   double ny = 1;
-  double nz = 128;//32;
+  double nz = 256;//32;
 
-  double nppc  = 1024;//2048;         // Average number of macro particle per cell per species 
+  double nppc  = 1024;//2048;//2048;         // Average number of macro particle per cell per species 
   
   double topology_x = 32;     // Number of domains in x, y, and z
   double topology_y = 1;
@@ -277,7 +282,7 @@ begin_initialization {
   double hx = Lx/nx;
   double hy = Ly/ny;
   double hz = Lz/nz;
-  #define n(z) (n_back + n_0 / (cosh(z/L) * cosh(z/L))) // Ion density profile
+  #define n(z) (n_0 / (cosh(z/L) * cosh(z/L))) // Ion density profile
   // double nsheet = 0;
   // for (int i=0; i<nx; i++ ) {
 
@@ -289,7 +294,7 @@ begin_initialization {
   //   } 
   double N_i2N_pui = 5;//1/0.058;
   double N_i2N_alpha = 11.65;
-  double nb_nc = 0.5;
+  double nb_nc = 0.2;//0.5;
   double ratio_core = 1/(1+nb_nc); // fraction of ions in core region
   // double Np_sheet = n0*nsheet*Ly;       // Total number of physical ions in sheet
   // double Np_back  = n_back*Lx*Ly*Lz;  // Total number of physical background ions
@@ -299,7 +304,10 @@ begin_initialization {
   double Nalpha = nppc*nx*ny*nz/N_i2N_alpha;
   double Npui  = nppc*nx*ny*nz/N_i2N_pui;         // Total macroparticle PUIs in box
   double Ne  = Ni+Npui;         // Total macroparticle electrons in box
-  double Np = 2*n_0*Lx*Ly*L*tanh(0.5*Lz/L)+n_back*Lx*Ly*Lz;//n0*Lx*Ly*Lz;            // Total physical ions.
+  
+  double Np_sheet = 2*n_0*Lx*Ly*L*tanh(0.5*Lz/L);
+  double Np_back = n_back*Lx*Ly*Lz;
+  double Np = Np_back+Np_sheet;//n0*Lx*Ly*Lz;            // Total physical ions.
 
   Ni = trunc_granular(Ni,nproc());// Make it divisible by number of processors
   Ni_c = trunc_granular(Ni_c,nproc());// Make it divisible by number of processors
@@ -314,7 +322,7 @@ begin_initialization {
   //  double udre = b0/L;
   //  double udri = 0.0;
   double udri = 0;//2*Ti/(ec*b0*L);   // Ion drift velocity
-  double Lpert = Lx;                       // wavelength of perturbation
+  double Lpert = Lx/8;                       // wavelength of perturbation
   double dbz = 0.05*b0;                    // Perturbation in Bz rel. to Bo (Only change here)
   double dbx = -dbz*Lpert/(2.0*Lz);        // Set Bx perturbation so that div(B) = 0
   // Determine the time step
@@ -329,7 +337,8 @@ begin_initialization {
   
 //particle tracking
   int particle_tracing = 1; // 0: notracing, 1: forward tracing 2: tracing from particle files
-  int particle_select = 50; // track one every particle_select particles
+  int particle_select = 800; // track one every particle_select particles
+  int particle_select_b = 160; // track one every particle_select particles
   int i_particle_select = particle_select;
   int pui_particle_select = 10;
   int alpha_particle_select = 11;
@@ -621,13 +630,15 @@ if ( iz==topology_z-1 ) set_domain_particle_bc( BOUNDARY(0,0,1), reflect_particl
   // Load fields
 
 sim_log( "Loading fields" );
-//#define DBX (dbx*cos(2.0*M_PI*(x-0.5*Lx)/Lpert)*sin(M_PI*z/Lz))
-#define DBX (dbx*cos(2.0*M_PI*(x)/Lpert)*sin(M_PI*z/Lz))
-//#define DBZ (dbz*cos(M_PI*z/Lz)*sin(2.0*M_PI*(x-0.5*Lx)/Lpert))
-#define DBZ (dbz*cos(M_PI*z/Lz)*sin(2.0*M_PI*(x)/Lpert))
+#define DBX (dbx*cos(2.0*M_PI*(x)/Lpert)*sin(M_PI*z/Lz)*((fabs(x)<=Lpert/2.0 || fabs(Lx-x)<=Lpert/2)?1.0:0.0))
+//#define DBX (dbx*cos(2.0*M_PI*(x)/Lpert)*sin(M_PI*z/Lz))
+
+#define DBZ (dbz*cos(M_PI*z/Lz)*sin(2.0*M_PI*(x)/Lpert)*((fabs(x)<=Lpert/2.0 || fabs(Lx-x)<=Lpert/2)?1.0:0.0))
+//#define DBZ (dbz*cos(M_PI*z/Lz)*sin(2.0*M_PI*(x)/Lpert))
 #define BX (b0*tanh(z/L))
 #define BY sqrt(b0*b0 + bg*bg*b0*b0 - BX*BX)
-#define UDY (Ti*(b0/L)/(cosh(z/L)*cosh(z/L))/n(z)/(Ti+Te))
+//#define UDY (Ti*(b0/L)/(cosh(z/L)*cosh(z/L))/n(z)/(Ti+Te))
+#define UDY (2*Ti*(b0/L))
 // Note: everywhere is a region that encompasses the entire simulation                                                                                                                   
 // In general, regions are specied as logical equations (i.e. x>0 && x+y<2) 
   set_region_field( everywhere, 0, 0, 0,
@@ -648,7 +659,8 @@ sim_log( "Loading fields" );
   double xmin = grid->x0 , xmax = grid->x0+(grid->dx)*(grid->nx);
   double ymin = grid->y0 , ymax = grid->y0+(grid->dy)*(grid->ny);
   double zmin = grid->z0 , zmax = grid->z0+(grid->dz)*(grid->nz);
-  double nnode = n_0*abs(tanh(zmax/L)-tanh(zmin/L))*(ymax-ymin)*(xmax-xmin)*L+n_back*(zmax-zmin)*(ymax-ymin)*(xmax-xmin);
+  double nnode_sheet = n_0*abs(tanh(zmax/L)-tanh(zmin/L))*(ymax-ymin)*(xmax-xmin)*L;
+  double nnode_back = n_back*(zmax-zmin)*(ymax-ymin)*(xmax-xmin);
   
 //   for ( int i=0; i < grid->nx; i++ ) {
 //     for ( int j=0; j< grid->nz; j++ ) {
@@ -658,15 +670,19 @@ sim_log( "Loading fields" );
 //     }
 // }
 
-  std::cout<<rank()<<", xmin= "<<xmin<<"  xmax= "<<xmax<<"  zmin= "<<zmin<<"  zmax= "<<zmax<<"nx= "<<grid->nx<<", nnode="<<nnode<<std::endl;
-  double nlocal_c = Ni_c*nnode/Np;
-  double nlocal_b = Ni_b*nnode/Np;
+  //std::cout<<rank()<<", xmin= "<<xmin<<"  xmax= "<<xmax<<"  zmin= "<<zmin<<"  zmax= "<<zmax<<"nx= "<<grid->nx<<", nnode="<<nnode<<std::endl;
+  double n_local_c_sheet = Ni_c*nnode_sheet/Np;
+  double n_local_b_sheet = Ni_b*nnode_sheet/Np;
+  double n_local_c_back = Ni_c*nnode_back/Np;
+  double n_local_b_back = Ni_b*nnode_back/Np;
+  //double nlocal_b = Ni_b*nnode_back/Np;
   int num_ion_c = 0;
   int num_ion_b = 0;
   int num_tracer_c = 0;
   int num_tracer_b = 0;
   //std::cout<<"Ni="<<Ni<<", nnode="<<nnode<<", nsheet="<<nsheet<<", nlocal_c = "<< nlocal_c << std::endl;
-  repeat ( nlocal_c ) {
+  repeat ( n_local_c_sheet ) {
+
      double x, y, z, ux, uy, uz, d0 ;
     // 定义提议分布函数（这里简单假设为均匀分布）
     double f_max = n_back + n_0; // 提议分布的上限
@@ -681,9 +697,9 @@ sim_log( "Loading fields" );
      y = uniform(rng(0),ymin,ymax);
      //z = uniform(rng(0),zmin,zmax);
      
-     ux = normal( rng(0), 0, vthi_c)-v_beam_drift*(1-ratio_core);
-     uy = normal( rng(0), 0, vthi_c)+1*UDY;
-     uz = normal( rng(0), 0, vthi_c);
+     ux = normal( rng(0), 0, vthi_para)-v_beam_drift*(1-ratio_core);
+     uy = normal( rng(0), 0, vthi_perp)+1*UDY;
+     uz = normal( rng(0), 0, vthi_perp);
     //  ux = generateRandom(0,-v_beam_drift,0.5,1.25/2);
     //  uy = generateRandom(0,0,0.5,1.25/2);
     //  uz = generateRandom(0,0,0.5,1.25/2);
@@ -702,7 +718,45 @@ sim_log( "Loading fields" );
     }
 
    }
-   repeat ( nlocal_b ) {
+     repeat ( n_local_c_back ) {
+
+     double x, y, z, ux, uy, uz, d0 ;
+    // 定义提议分布函数（这里简单假设为均匀分布）
+    double f_max = n_back + n_0; // 提议分布的上限
+    double test;
+    // 使用拒绝方法来加载粒子位置
+    // do {
+        
+        
+    //     test = uniform(rng(0), 0, 1);
+    // } while( f_max * test > n(z) );
+     x = uniform(rng(0),xmin,xmax);
+     y = uniform(rng(0),ymin,ymax);
+     z = uniform(rng(0), zmin, zmax);
+     //z = uniform(rng(0),zmin,zmax);
+     
+     ux = normal( rng(0), 0, vthi_para)-v_beam_drift*(1-ratio_core);
+     uy = normal( rng(0), 0, vthi_perp);
+     uz = normal( rng(0), 0, vthi_perp);
+    //  ux = generateRandom(0,-v_beam_drift,0.5,1.25/2);
+    //  uy = generateRandom(0,0,0.5,1.25/2);
+    //  uz = generateRandom(0,0,0.5,1.25/2);
+
+     inject_particle( ion_c, x, y, z, ux, uy, uz, qi, 0, 0);
+     num_ion_c++;
+     if (particle_tracing == 1) { // only tag particles in the 1st pass
+      if (num_ion_c%particle_select == 0) {
+        num_tracer_c++;
+        //int tag = ((((int)rank())<<19) | (num_tracer_c & 0x7ffff)); // 13 bits (8192) for rank and 19 bits (~520k) */
+        int32_t tag = ((((int)rank())<<22) | (num_tracer_c & 0x3FFFFF));
+        /*int tag = ((((int)rank())<<13) | (num_tracer_c & 0x1fff)); // 19 bits (520k) for rank and 13 bits (8192)*/
+        //tag_tracer( (electron->p + electron->np-1), e_tracer, tag );
+        tag_tracer( (ion_c->p      + ion_c->np-1),     tracer_c, tag );
+      }
+    }
+
+   }
+   repeat ( n_local_b_sheet ) {
     double x, y, z, ux, uy, uz, d0 ;
     double test;
     // 定义提议分布函数（这里简单假设为均匀分布）
@@ -728,7 +782,7 @@ sim_log( "Loading fields" );
     inject_particle( ion_b, x, y, z, ux, uy, uz, qi, 0, 0);
     num_ion_b++;
     if (particle_tracing == 1) { // only tag particles in the 1st pass
-      if (num_ion_b%particle_select == 0) {
+      if (num_ion_b%particle_select_b == 0) {
         num_tracer_b++;
         //int tag = ((((int)rank())<<19) | (num_tracer_b & 0x7ffff)); // 13 bits (8192) for rank and 19 bits (~520k)*/ 
         int32_t tag = ((((int)rank())<<22) | (num_tracer_b & 0x3FFFFF));
@@ -739,6 +793,45 @@ sim_log( "Loading fields" );
     }
 
   }
+
+   repeat ( n_local_b_back ) {
+
+     double x, y, z, ux, uy, uz, d0 ;
+    // 定义提议分布函数（这里简单假设为均匀分布）
+    double f_max = n_back + n_0; // 提议分布的上限
+    double test;
+    // 使用拒绝方法来加载粒子位置
+    // do {
+        
+        
+    //     test = uniform(rng(0), 0, 1);
+    // } while( f_max * test > n(z) );
+     x = uniform(rng(0),xmin,xmax);
+     y = uniform(rng(0),ymin,ymax);
+     z = uniform(rng(0), zmin, zmax);
+     //z = uniform(rng(0),zmin,zmax);
+     
+     ux = normal( rng(0), 0, vthi_para)+v_beam_drift*ratio_core;
+     uy = normal( rng(0), 0, vthi_perp);
+     uz = normal( rng(0), 0, vthi_perp);
+    //  ux = generateRandom(0,-v_beam_drift,0.5,1.25/2);
+    //  uy = generateRandom(0,0,0.5,1.25/2);
+    //  uz = generateRandom(0,0,0.5,1.25/2);
+
+     inject_particle( ion_b, x, y, z, ux, uy, uz, qi, 0, 0);
+    num_ion_b++;
+    if (particle_tracing == 1) { // only tag particles in the 1st pass
+      if (num_ion_b%particle_select_b == 0) {
+        num_tracer_b++;
+        //int tag = ((((int)rank())<<19) | (num_tracer_b & 0x7ffff)); // 13 bits (8192) for rank and 19 bits (~520k)*/ 
+        int32_t tag = ((((int)rank())<<22) | (num_tracer_b & 0x3FFFFF));
+        /*int tag = ((((int)rank())<<13) | (num_tracer_b & 0x1fff)); // 19 bits (520k) for rank and 13 bits (8192)*/
+        //tag_tracer( (electron->p + electron->np-1), e_tracer, tag );
+        tag_tracer( (ion_b->p      + ion_b->np-1),      tracer_b, tag );
+      }
+    }
+
+   }
   //hijack_tracers(2);
   sim_log( "Finished loading particles" );
 
