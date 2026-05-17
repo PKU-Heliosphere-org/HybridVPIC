@@ -1,0 +1,63 @@
+# macOS/editor noise
+.DS_Store
+*~
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.cache/
+.mplconfig/
+
+# HybridVPIC deck executables and generated metadata
+*.Darwin
+*.Linux
+*.vpc
+*.bin
+*.btr
+*.cy
+*.op
+*.ppu
+*.mod
+outfile
+info
+hvpic.out
+core.*
+translate_psp_icw
+
+# Simulation output directories
+**/fields/
+**/hydro/
+**/particle/
+**/particles/
+**/rundata/
+**/restore*/
+**/restart*/
+**/window/
+**/spectrum/
+examples/**/data/
+examples/**/figures/
+examples/**/plots/
+
+# Keep the curated preview figures for the PSP ICW teaching example.
+!examples/psp_counterpropagating_icw/figures/
+!examples/psp_counterpropagating_icw/figures/*.png
+!examples/psp_counterpropagating_icw/ref_doc/
+!examples/psp_counterpropagating_icw/ref_doc/*.pdf
+
+# Common translated or post-processed arrays
+*.gda
+*.h5
+*.hdf5
+*.vtk
+*.vti
+*.mpg
+energy_spectrum
+
+# Local CMake build products
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake

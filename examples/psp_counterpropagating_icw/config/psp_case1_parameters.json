@@ -1,0 +1,46 @@
+{
+  "case": "PSP 2023-06-22 counterpropagating ion-cyclotron waves",
+  "source_in_lecture": "本科生课程讲义/第十一讲讲义/第十一讲讲义 (2026).md, 第二部分 模拟案例-1",
+  "physical_parameters": {
+    "B0_nT": 780.0,
+    "Vsw_km_s": 319.9,
+    "core": {
+      "density_cm3": 2530.0,
+      "bulk_speed_km_s": 234.0,
+      "T_parallel_eV": 20.0,
+      "T_perp_eV_observed": 52.0,
+      "T_perp_multiplier_for_simulation": 1.4
+    },
+    "beam": {
+      "density_cm3": 2169.0,
+      "bulk_speed_km_s": 420.0,
+      "T_parallel_eV": 48.0,
+      "T_perp_eV_observed": 107.0,
+      "T_perp_multiplier_for_simulation": 1.4
+    }
+  },
+  "normalized_parameters_used_by_deck": {
+    "B0": 1.0,
+    "n0": 1.0,
+    "vA_km_s_from_observation": 248.19215828208905,
+    "core_density_fraction": 0.5384124281762077,
+    "beam_density_fraction": 0.4615875718237923,
+    "core_drift_vA": -0.3461027962953131,
+    "beam_drift_vA": 0.4033165297923267,
+    "core_beta_parallel": 0.03348972372942244,
+    "beam_beta_parallel": 0.06890676120390571,
+    "core_Tperp_over_Tpar": 3.64,
+    "beam_Tperp_over_Tpar": 3.120833333333333
+  },
+  "numerical_parameters": {
+    "dimension": "1D along z, parallel to B0",
+    "Lz_di": 160.0,
+    "nz": 512,
+    "dz_di": 0.3125,
+    "dt_Omega_ci_inverse": 0.05,
+    "t_end_Omega_ci_inverse": 700.0,
+    "particles_per_cell_default": 2048,
+    "particles_per_cell_production_target": 262144,
+    "boundary_conditions": "periodic"
+  }
+}
