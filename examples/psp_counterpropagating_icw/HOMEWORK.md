@@ -12,11 +12,18 @@
 https://github.com/PKU-Heliosphere-org/HybridVPIC
 ```
 
-学生可以用 `git clone` 下载完整仓库：
+本作业案例目前位于 HybridVPIC 仓库的 `feature/1d-instability` 分支。学生可以用 `git clone` 下载该分支：
 
 ```bash
-git clone https://github.com/PKU-Heliosphere-org/HybridVPIC.git
+git clone -b feature/1d-instability https://github.com/PKU-Heliosphere-org/HybridVPIC.git
 cd HybridVPIC
+```
+
+如果已经下载过仓库，也可以进入仓库后切换到该分支：
+
+```bash
+git fetch origin
+git checkout feature/1d-instability
 ```
 
 本作业对应的案例目录为：
